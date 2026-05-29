@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app_database import AppDatabase
+from app.database import AppDatabase
 
 
 class AppDatabaseTest(unittest.TestCase):

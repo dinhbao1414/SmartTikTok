@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from youtube_scanner import YouTubeScanner, build_channel_tab_url, parse_video_links
+from app.youtube.scanner import YouTubeScanner, build_channel_tab_url, parse_video_links
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
@@ -58,7 +58,7 @@ class YouTubeScannerTest(unittest.TestCase):
             "https://www.youtube.com/@hoangacc/videos",
         )
 
-    @patch("youtube_scanner.requests.get")
+    @patch("app.youtube.scanner.requests.get")
     def test_scan_uses_get_and_timeout(self, mock_get):
         response = Mock()
         response.text = (FIXTURES / "youtube_shorts.html").read_text(encoding="utf-8")

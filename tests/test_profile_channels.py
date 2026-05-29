@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from profile_store import (
+from app.profiles.store import (
     create_chrome_profiles,
     load_profiles,
     update_profile_channel,

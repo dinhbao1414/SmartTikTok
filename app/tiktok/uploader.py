@@ -3,6 +3,32 @@ from pathlib import Path
 
 from app.paths import TIKTOK_UPLOAD_URL
 
+UPLOAD_BUTTON_SCRIPT = """
+/* UPLOAD_BUTTON_SCRIPT */
+const isVisible = (button) => {
+    const rect = button.getBoundingClientRect();
+    const style = window.getComputedStyle(button);
+    return rect.width > 0 &&
+        rect.height > 0 &&
+        style.display !== 'none' &&
+        style.visibility !== 'hidden' &&
+        style.opacity !== '0';
+};
+return Array.from(document.querySelectorAll('button, [role="button"], label')).find((button) => {
+    const text = (button.innerText || button.textContent || '')
+        .normalize('NFD')
+        .replace(/[\\u0300-\\u036f]/g, '')
+        .trim()
+        .toLowerCase();
+    return isVisible(button) && (
+        text.includes('upload') ||
+        text.includes('select video') ||
+        text.includes('tai len') ||
+        text.includes('chon video')
+    );
+}) || null;
+"""
+
 POST_BUTTON_SCRIPT = """
 /* POST_BUTTON_SCRIPT */
 const isEnabled = (button) => {
@@ -157,6 +183,7 @@ class TikTokUploader:
         return normalized
 
     def _upload_current_page(self, browser, file_path, title, timeout):
+        self._hover_upload_button(browser)
         file_input = self._find_video_file_input(browser, timeout=30)
         if not file_input:
             raise RuntimeError("TikTok upload input not found. Profile may not be logged in.")
@@ -185,6 +212,12 @@ class TikTokUploader:
             if file_input:
                 return file_input
         return None
+
+    def _hover_upload_button(self, browser):
+        upload_button = browser.execute_script(UPLOAD_BUTTON_SCRIPT)
+        if upload_button and hasattr(browser, "move_to_element"):
+            browser.move_to_element(upload_button)
+        return upload_button
 
     def _fill_description(self, browser, title):
         if not title:

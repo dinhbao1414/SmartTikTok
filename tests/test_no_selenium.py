@@ -14,9 +14,21 @@ SOURCE_PATHS = [
     ROOT / "Controller",
     ROOT / "Common",
     ROOT / "CaptchaSolve",
-    ROOT / "gui.py",
-    ROOT / "main.py",
     ROOT / "requirements.txt",
+]
+
+ROOT_SHIMS = [
+    "app_database.py",
+    "app_paths.py",
+    "gui.py",
+    "main.py",
+    "profile_store.py",
+    "telegram_reporter.py",
+    "tiktok_uploader.py",
+    "upload_worker.py",
+    "video_downloader.py",
+    "video_splitter.py",
+    "youtube_scanner.py",
 ]
 
 
@@ -35,6 +47,10 @@ def iter_source_files():
 class NoSeleniumTest(unittest.TestCase):
     def test_app_package_is_scanned(self):
         self.assertIn(ROOT / "app", SOURCE_PATHS)
+
+    def test_root_has_no_compatibility_shims(self):
+        existing = [name for name in ROOT_SHIMS if (ROOT / name).exists()]
+        self.assertEqual(existing, [])
 
     def test_source_has_no_browser_driver_references(self):
         bad_terms = (LEGACY_BROWSER, LEGACY_BROWSER_WIRE, LEGACY_DRIVER_API, LEGACY_CHROME_DRIVER)
@@ -72,7 +88,7 @@ class NoSeleniumTest(unittest.TestCase):
         bad_terms = (LEGACY_PROFILE_STACK, "Thread" + "Tiktok", "Captcha" + "Solve", "Get" + "Mail", "Get" + "Proxy")
         offenders = []
         checked_paths = [
-            ROOT / "gui.py",
+            ROOT / "app" / "gui.py",
             ROOT / "Controller",
             ROOT / "Common",
         ]
@@ -93,7 +109,7 @@ class NoSeleniumTest(unittest.TestCase):
         self.assertEqual(offenders, [])
 
     def test_main_has_no_removed_registration_imports(self):
-        main_text = (ROOT / "main.py").read_text(encoding="utf-8", errors="ignore")
+        main_text = (ROOT / "app" / "main.py").read_text(encoding="utf-8", errors="ignore")
         bad_terms = ("Controller.TiktokController", "YoloCaptchaV2", "Thread" + "Tiktok", LEGACY_PROFILE_STACK)
         offenders = [term for term in bad_terms if term in main_text]
         self.assertEqual(offenders, [])

@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import Mock, patch
 
-from telegram_reporter import TelegramReporter
+from app.reporting.telegram import TelegramReporter
 
 
 class TelegramReporterTest(unittest.TestCase):
@@ -10,7 +10,7 @@ class TelegramReporterTest(unittest.TestCase):
         self.assertFalse(reporter.enabled)
         self.assertEqual(reporter.send_text("hello"), {"sent": False, "reason": "disabled"})
 
-    @patch("telegram_reporter.requests.post")
+    @patch("app.reporting.telegram.requests.post")
     def test_send_text_posts_to_telegram_api(self, mock_post):
         response = Mock()
         response.raise_for_status.return_value = None
@@ -23,7 +23,7 @@ class TelegramReporterTest(unittest.TestCase):
         self.assertEqual(mock_post.call_args.args[0], "https://api.telegram.org/botTOKEN/sendMessage")
         self.assertEqual(mock_post.call_args.kwargs["json"]["chat_id"], "123")
 
-    @patch("telegram_reporter.requests.post")
+    @patch("app.reporting.telegram.requests.post")
     def test_send_job_report_includes_required_details(self, mock_post):
         response = Mock()
         response.raise_for_status.return_value = None

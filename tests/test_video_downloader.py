@@ -3,11 +3,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from video_downloader import VideoDownloader
+from app.youtube.downloader import VideoDownloader
 
 
 class VideoDownloaderTest(unittest.TestCase):
-    @patch("video_downloader.yt_dlp.YoutubeDL")
+    @patch("app.youtube.downloader.yt_dlp.YoutubeDL")
     def test_download_uses_video_id_folder_and_returns_path(self, youtube_dl):
         with tempfile.TemporaryDirectory() as tmp:
             output_file = Path(tmp) / "aaaaaaaaaaa" / "aaaaaaaaaaa.mp4"

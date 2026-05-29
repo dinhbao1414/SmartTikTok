@@ -256,10 +256,14 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         self.input_split_threshold = QtWidgets.QSpinBox(parent=self.settings_timing_group)
         self.input_split_threshold.setRange(1, 1440)
         self.input_split_threshold.setValue(10)
+        self.input_split_threshold.setToolTip(
+            "Videos longer than this many minutes are split into 3 equal parts."
+        )
 
         timing_layout.addWidget(QtWidgets.QLabel("Poll interval (sec)", parent=self.settings_timing_group), 0, 0)
         timing_layout.addWidget(self.input_poll_interval, 0, 1)
-        timing_layout.addWidget(QtWidgets.QLabel("Split after (min)", parent=self.settings_timing_group), 1, 0)
+        self.split_threshold_label = QtWidgets.QLabel("Split video > (min)", parent=self.settings_timing_group)
+        timing_layout.addWidget(self.split_threshold_label, 1, 0)
         timing_layout.addWidget(self.input_split_threshold, 1, 1)
         timing_layout.setColumnStretch(1, 1)
 

@@ -12,9 +12,9 @@ warnings.filterwarnings("ignore", "sipPyTypeDict.*", DeprecationWarning)
 
 from PyQt6 import QtWidgets
 
-import gui as gui_module
-from gui import Ui_MainWindow
-from profile_store import create_chrome_profiles, load_profiles
+import app.gui as gui_module
+from app.gui import Ui_MainWindow
+from app.profiles.store import create_chrome_profiles, load_profiles
 
 class GuiSmokeTest(unittest.TestCase):
     @classmethod
@@ -97,6 +97,11 @@ class GuiSmokeTest(unittest.TestCase):
         self.assertEqual(window.settings_groups_layout.count(), 3)
         self.assertLessEqual(window.settings_layout.count(), 3)
         self.assertLessEqual(window.settings_layout.spacing(), 8)
+        self.assertEqual(window.split_threshold_label.text(), "Split video > (min)")
+        self.assertEqual(
+            window.input_split_threshold.toolTip(),
+            "Videos longer than this many minutes are split into 3 equal parts.",
+        )
 
     def test_close_event_waits_for_running_worker_thread(self):
         class FakeWorker:

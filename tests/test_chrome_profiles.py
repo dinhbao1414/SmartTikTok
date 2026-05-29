@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 
-from profile_store import (
+from app.profiles.store import (
     create_chrome_profiles,
     delete_profile_record,
     load_profiles,

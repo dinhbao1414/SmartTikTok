@@ -2,8 +2,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app_database import AppDatabase
-from upload_worker import UploadWorkerCore, YoutubeToTikTokWorker
+from app.database import AppDatabase
+from app.workers.upload_worker import UploadWorkerCore, YoutubeToTikTokWorker
 
 
 class FakeScanner:

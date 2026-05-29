@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tiktok_uploader import TikTokUploader
+from app.tiktok.uploader import TikTokUploader
 
 
 class FakeElement:
@@ -36,6 +36,7 @@ class FakeRemote:
         self.sleep_calls = []
         self.sent_text = []
         self.clicked_elements = []
+        self.moved_elements = []
 
     def get(self, url, wait_load=False):
         self.urls.append(url)
@@ -81,6 +82,10 @@ class FakeRemote:
     def click_element(self, element):
         self.clicked_elements.append(element)
         element.click()
+        return element
+
+    def move_to_element(self, element):
+        self.moved_elements.append(element)
         return element
 
 class ProcessingRemote:
@@ -133,6 +138,7 @@ class TikTokUploaderTest(unittest.TestCase):
             self.assertEqual(wrapper.browser.video_file_input.sent_file, str(video.resolve()))
             self.assertEqual(wrapper.browser.wrong_file_input.sent_file, "")
             self.assertFalse(wrapper.browser.upload_button.clicked)
+            self.assertEqual(wrapper.browser.moved_elements, [wrapper.browser.upload_button])
             self.assertTrue(wrapper.browser.post_button.clicked)
             self.assertEqual(wrapper.browser.clicked_elements, [wrapper.browser.post_button])
             self.assertEqual(wrapper.browser.sleep_calls[-1], 5)
@@ -168,7 +174,7 @@ class TikTokUploaderTest(unittest.TestCase):
         remote = ProcessingRemote()
         uploader = TikTokUploader(browser_factory=FakeChromeProfileBrowser, wait_seconds=0)
 
-        with patch("tiktok_uploader.time.time", side_effect=[0, 0, 2]):
+        with patch("app.tiktok.uploader.time.time", side_effect=[0, 0, 2]):
             uploader._wait_until_finished(remote, timeout=1)
 
         self.assertEqual(remote.sleep_count, 1)
@@ -182,7 +188,7 @@ class TikTokUploaderTest(unittest.TestCase):
         self.assertEqual(remote.sleep_count, 0)
 
     def test_post_button_script_targets_tiktok_data_e2e_button(self):
-        from tiktok_uploader import POST_BUTTON_SCRIPT
+        from app.tiktok.uploader import POST_BUTTON_SCRIPT
 
         self.assertIn('[data-e2e="post_video_button"]', POST_BUTTON_SCRIPT)
         self.assertIn("data-disabled", POST_BUTTON_SCRIPT)
