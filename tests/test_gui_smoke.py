@@ -1,4 +1,6 @@
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 import warnings
@@ -20,25 +22,67 @@ class GuiSmokeTest(unittest.TestCase):
         warnings.filterwarnings("ignore", "sipPyTypeDict.*", DeprecationWarning)
         cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
+    def test_app_gui_can_be_executed_by_file_path(self):
+        root = Path(__file__).resolve().parents[1]
+        script = (
+            "import runpy\n"
+            "from PyQt6 import QtWidgets\n"
+            "QtWidgets.QWidget.show = lambda self: print('SHOW_CALLED')\n"
+            "QtWidgets.QApplication.exec = lambda self: print('EXEC_CALLED') or 0\n"
+            f"runpy.run_path({str(root / 'app' / 'gui.py')!r}, run_name='__main__')\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=root,
+            env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("SHOW_CALLED", result.stdout)
+        self.assertIn("EXEC_CALLED", result.stdout)
+
     def test_window_has_modern_sidebar_layout_and_run_controls(self):
         window = Ui_MainWindow()
 
         nav_labels = [button.text() for button in window.nav_buttons]
+        stylesheet = window.styleSheet()
+        main_margins = window.main_layout.contentsMargins()
+        content_margins = window.content_layout.contentsMargins()
 
         self.assertEqual(nav_labels, ["Profiles", "Settings", "Logs"])
         self.assertEqual(window.pages.count(), 3)
         self.assertEqual(window.sidebar.objectName(), "Sidebar")
-        self.assertEqual(window.header_title.text(), "YouTube To TikTok")
-        self.assertIn("#0B0F19", window.styleSheet())
+        self.assertFalse(hasattr(window, "quick_widget"))
+        self.assertLessEqual(window.sidebar.width(), 190)
+        self.assertLessEqual(window.table.verticalHeader().defaultSectionSize(), 40)
+        self.assertLessEqual(main_margins.left(), 12)
+        self.assertLessEqual(main_margins.top(), 12)
+        self.assertLessEqual(main_margins.right(), 12)
+        self.assertLessEqual(main_margins.bottom(), 12)
+        self.assertLessEqual(content_margins.left(), 12)
+        self.assertLessEqual(content_margins.top(), 12)
+        self.assertLessEqual(content_margins.right(), 12)
+        self.assertLessEqual(content_margins.bottom(), 12)
+        self.assertEqual(window.header_title.text(), "YouTube -> TikTok")
+        self.assertEqual(window.group_create.title(), "Create profiles")
         self.assertEqual(window.button_run_all.text(), "Run")
         self.assertEqual(window.button_stop.text(), "Stop")
         self.assertTrue(hasattr(window, "logs_view"))
         self.assertTrue(window.logs_view.isReadOnly())
         self.assertEqual(window.input_poll_interval.minimum(), 1)
         self.assertEqual(window.input_split_threshold.value(), 10)
-        self.assertIn("color: #F8FAFC", window.styleSheet())
-        self.assertIn("QTableWidget::item", window.styleSheet())
-        self.assertIn("QLabel {", window.styleSheet())
+        self.assertIn("#F8FAFC", stylesheet)
+        self.assertIn("#FFFFFF", stylesheet)
+        self.assertIn("#111827", stylesheet)
+        self.assertIn("#D1D5DB", stylesheet)
+        self.assertNotIn("#0B0F19", stylesheet)
+        self.assertNotIn("#172033", stylesheet)
+        self.assertNotIn("#2563EB", stylesheet)
+        self.assertIn("QTableWidget::item", stylesheet)
+        self.assertIn("QLabel {", stylesheet)
 
     def test_close_event_waits_for_running_worker_thread(self):
         class FakeWorker:
@@ -144,6 +188,29 @@ class GuiSmokeTest(unittest.TestCase):
             profile = load_profiles(profiles_path)[0]
             self.assertEqual(profile["channel_url"], "https://www.youtube.com/@hoangacc/videos")
             self.assertEqual(profile["channel_mode"], "videos")
+
+    def test_profile_table_actions_are_readable_in_compact_layout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profiles_path = root / "data" / "profiles.json"
+            create_chrome_profiles(profiles_path, root / "profiles", 1, "acc", "", "")
+
+            with patch.object(gui_module, "PROFILES_PATH", profiles_path):
+                window = Ui_MainWindow()
+
+            expected_widths = {
+                4: 76,
+                6: 64,
+                7: 64,
+                8: 72,
+            }
+            for column, minimum_width in expected_widths.items():
+                self.assertGreaterEqual(window.table.columnWidth(column), minimum_width)
+
+            self.assertGreaterEqual(window.table.cellWidget(0, 4).minimumWidth(), 76)
+            self.assertGreaterEqual(window.table.cellWidget(0, 6).minimumWidth(), 64)
+            self.assertGreaterEqual(window.table.cellWidget(0, 7).minimumWidth(), 64)
+            self.assertGreaterEqual(window.table.cellWidget(0, 8).minimumWidth(), 72)
 
     def test_save_settings_persists_split_threshold(self):
         with tempfile.TemporaryDirectory() as tmp:

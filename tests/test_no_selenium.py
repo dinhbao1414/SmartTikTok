@@ -10,6 +10,7 @@ LEGACY_CHROME_DRIVER = "chrome" + "driver"
 LEGACY_PROFILE_STACK = "Go" + "login"
 
 SOURCE_PATHS = [
+    ROOT / "app",
     ROOT / "Controller",
     ROOT / "Common",
     ROOT / "CaptchaSolve",
@@ -32,6 +33,9 @@ def iter_source_files():
 
 
 class NoSeleniumTest(unittest.TestCase):
+    def test_app_package_is_scanned(self):
+        self.assertIn(ROOT / "app", SOURCE_PATHS)
+
     def test_source_has_no_browser_driver_references(self):
         bad_terms = (LEGACY_BROWSER, LEGACY_BROWSER_WIRE, LEGACY_DRIVER_API, LEGACY_CHROME_DRIVER)
         offenders = []
