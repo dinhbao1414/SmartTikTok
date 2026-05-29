@@ -84,6 +84,20 @@ class GuiSmokeTest(unittest.TestCase):
         self.assertIn("QTableWidget::item", stylesheet)
         self.assertIn("QLabel {", stylesheet)
 
+    def test_settings_are_grouped_compactly(self):
+        window = Ui_MainWindow()
+
+        groups = [
+            window.settings_timing_group,
+            window.settings_storage_group,
+            window.settings_telegram_group,
+        ]
+
+        self.assertEqual([group.title() for group in groups], ["Timing", "Storage", "Telegram"])
+        self.assertEqual(window.settings_groups_layout.count(), 3)
+        self.assertLessEqual(window.settings_layout.count(), 3)
+        self.assertLessEqual(window.settings_layout.spacing(), 8)
+
     def test_close_event_waits_for_running_worker_thread(self):
         class FakeWorker:
             def __init__(self):
