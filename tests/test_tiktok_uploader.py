@@ -48,6 +48,8 @@ class FakeRemote:
         self.moved_elements = []
         self.js_clicked_elements = []
         self.fail_click_elements = set()
+        self.cdp_calls = []
+        self.pressed_keys = []
 
     def get(self, url, wait_load=False):
         self.urls.append(url)
@@ -111,6 +113,14 @@ class FakeRemote:
             "send_enter": send_enter,
             "clear_text": clear_text,
         })
+        return None
+
+    def send_cdp(self, method, params=None, **kwargs):
+        self.cdp_calls.append({"method": method, "params": params or {}})
+        return None
+
+    def press(self, key):
+        self.pressed_keys.append(key)
         return None
 
     def click_element(self, element):
@@ -295,6 +305,97 @@ class TikTokUploaderTest(unittest.TestCase):
             )
             self.assertTrue(wrapper.browser.post_button.clicked)
             self.assertTrue(wrapper.closed)
+
+    def test_upload_confirms_hashtags_then_types_remaining_description_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            video = Path(tmp) / "video.mp4"
+            video.write_bytes(b"video")
+            wrapper = FakeChromeProfileBrowser(tmp)
+            uploader = TikTokUploader(
+                browser_factory=lambda profile_path: wrapper,
+                wait_seconds=0,
+                close_delay_seconds=0,
+            )
+
+            uploader.upload(profile_path=tmp, video_path=video, title="#fyd #news part 1")
+
+            insert_calls = [
+                call for call in wrapper.browser.cdp_calls
+                if call["method"] == "Input.insertText"
+            ]
+            clear_script_calls = [
+                call for call in wrapper.browser.script_calls
+                if "FILL_DESCRIPTION_SCRIPT" in call["script"] and call["args"][1] == ""
+            ]
+            self.assertEqual(clear_script_calls, [])
+            self.assertEqual(insert_calls, [
+                {"method": "Input.insertText", "params": {"text": "#fyd"}},
+                {"method": "Input.insertText", "params": {"text": "#news"}},
+            ])
+            enter_calls = [
+                call for call in wrapper.browser.cdp_calls
+                if call["method"] == "Input.dispatchKeyEvent"
+            ]
+            self.assertEqual(enter_calls, [
+                {
+                    "method": "Input.dispatchKeyEvent",
+                    "params": {
+                        "type": "rawKeyDown",
+                        "key": "Enter",
+                        "code": "Enter",
+                        "windowsVirtualKeyCode": 13,
+                        "nativeVirtualKeyCode": 13,
+                        "unmodifiedText": "\r",
+                        "text": "\r",
+                    },
+                },
+                {
+                    "method": "Input.dispatchKeyEvent",
+                    "params": {
+                        "type": "keyUp",
+                        "key": "Enter",
+                        "code": "Enter",
+                        "windowsVirtualKeyCode": 13,
+                        "nativeVirtualKeyCode": 13,
+                    },
+                },
+                {
+                    "method": "Input.dispatchKeyEvent",
+                    "params": {
+                        "type": "rawKeyDown",
+                        "key": "Enter",
+                        "code": "Enter",
+                        "windowsVirtualKeyCode": 13,
+                        "nativeVirtualKeyCode": 13,
+                        "unmodifiedText": "\r",
+                        "text": "\r",
+                    },
+                },
+                {
+                    "method": "Input.dispatchKeyEvent",
+                    "params": {
+                        "type": "keyUp",
+                        "key": "Enter",
+                        "code": "Enter",
+                        "windowsVirtualKeyCode": 13,
+                        "nativeVirtualKeyCode": 13,
+                    },
+                },
+            ])
+            self.assertEqual(wrapper.browser.pressed_keys, [])
+            self.assertEqual(wrapper.browser.sleep_calls.count(2), 2)
+            self.assertEqual(wrapper.browser.sleep_calls.count(1), 0)
+            self.assertEqual(wrapper.browser.sent_text[0], {
+                "text": "",
+                "send_enter": False,
+                "clear_text": True,
+            })
+            self.assertEqual(wrapper.browser.sent_text[-1], {
+                "text": "part 1",
+                "send_enter": False,
+                "clear_text": False,
+            })
+            self.assertTrue(wrapper.browser.post_button.clicked)
 
     def test_upload_rejects_missing_file(self):
         uploader = TikTokUploader(browser_factory=FakeChromeProfileBrowser, wait_seconds=0)

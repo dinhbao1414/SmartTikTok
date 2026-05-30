@@ -11,7 +11,7 @@ from app.tiktok.uploader import TikTokUploader
 
 
 DEFAULT_VIDEO = r"C:\Users\thedu\Downloads\0528(1).mp4"
-
+DEFAULT_TITLE = "#fyd #news part 1"
 
 def find_profile(profile_id="", profile_path=""):
     profiles = load_profiles(PROFILES_PATH)
@@ -38,6 +38,7 @@ def main():
     parser.add_argument("--hour", type=int, default=9)
     parser.add_argument("--minute", type=int, default=0)
     parser.add_argument("--timeout", type=int, default=900)
+    parser.add_argument("--title", default=DEFAULT_TITLE)
     parser.add_argument("--confirm-post", action="store_true")
     args = parser.parse_args()
 
@@ -60,7 +61,7 @@ def main():
         schedule_year=args.year,
         schedule_hour=args.hour,
         schedule_minute=args.minute,
-        title=video_path.stem,
+        title=args.title or video_path.stem,
         timeout=args.timeout,
     )
     print(result)

@@ -3,6 +3,7 @@ from datetime import datetime
 from pathlib import Path
 
 from app.paths import TIKTOK_UPLOAD_URL
+from remote_browser.type.browser_support import Type
 
 UPLOAD_BUTTON_SCRIPT = """
 /* UPLOAD_BUTTON_SCRIPT */
@@ -323,6 +324,50 @@ field.dispatchEvent(new Event('change', { bubbles: true }));
 return true;
 """
 
+INSERT_DESCRIPTION_TEXT_SCRIPT = """
+/* INSERT_DESCRIPTION_TEXT_SCRIPT */
+const field = arguments[0];
+const value = arguments[1] || '';
+field.focus();
+if (field.getAttribute && field.getAttribute('contenteditable') === 'true') {
+    const selection = window.getSelection();
+    if (!selection.rangeCount || !field.contains(selection.anchorNode)) {
+        const range = document.createRange();
+        range.selectNodeContents(field);
+        range.collapse(false);
+        selection.removeAllRanges();
+        selection.addRange(range);
+    }
+    document.execCommand('insertText', false, value);
+} else if (typeof field.setRangeText === 'function') {
+    const start = field.selectionStart ?? field.value.length;
+    const end = field.selectionEnd ?? field.value.length;
+    field.setRangeText(value, start, end, 'end');
+} else {
+    field.value = `${field.value || ''}${value}`;
+}
+field.dispatchEvent(new Event('input', { bubbles: true }));
+field.dispatchEvent(new Event('change', { bubbles: true }));
+return true;
+"""
+
+ENTER_DESCRIPTION_SCRIPT = """
+/* ENTER_DESCRIPTION_SCRIPT */
+const field = arguments[0];
+field.focus();
+const eventInit = {
+    key: 'Enter',
+    code: 'Enter',
+    keyCode: 13,
+    which: 13,
+    bubbles: true,
+    cancelable: true,
+};
+field.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+field.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+return true;
+"""
+
 FILE_INPUT_CHANGE_SCRIPT = """
 /* FILE_INPUT_CHANGE_SCRIPT */
 const field = arguments[0];
@@ -330,6 +375,25 @@ field.dispatchEvent(new Event('input', { bubbles: true }));
 field.dispatchEvent(new Event('change', { bubbles: true }));
 return true;
 """
+
+ENTER_KEY_EVENTS = (
+    {
+        "type": "rawKeyDown",
+        "key": "Enter",
+        "code": "Enter",
+        "windowsVirtualKeyCode": 13,
+        "nativeVirtualKeyCode": 13,
+        "unmodifiedText": "\r",
+        "text": "\r",
+    },
+    {
+        "type": "keyUp",
+        "key": "Enter",
+        "code": "Enter",
+        "windowsVirtualKeyCode": 13,
+        "nativeVirtualKeyCode": 13,
+    },
+)
 
 def default_browser_factory(profile_path):
     from Controller.BrowserController import ChromeProfileBrowser
@@ -482,10 +546,61 @@ class TikTokUploader:
             return False
         description.click()
         browser.sleep(0.3)
+        hashtags, normal_text = self._split_description_title(str(title))
+        if hashtags:
+            self._clear_description(browser, description)
+            for hashtag in hashtags:
+                self._insert_description_text(browser, description, hashtag)
+                browser.sleep(2)
+                self._press_enter(browser, description)
+            if normal_text:
+                if hasattr(browser, "send_text"):
+                    browser.send_text(normal_text, send_enter=False, clear_text=False)
+                else:
+                    self._insert_description_text(browser, description, normal_text)
+            return True
         if hasattr(browser, "send_text"):
             browser.send_text(str(title), send_enter=False, clear_text=True)
             return True
         return bool(browser.execute_script(FILL_DESCRIPTION_SCRIPT, description, title))
+
+    def _clear_description(self, browser, description):
+        if hasattr(browser, "send_text"):
+            browser.send_text("", send_enter=False, clear_text=True)
+            return True
+        return bool(browser.execute_script(FILL_DESCRIPTION_SCRIPT, description, ""))
+
+    def _split_description_title(self, title):
+        hashtags = []
+        normal_words = []
+        for word in str(title).split():
+            if word.startswith("#") and len(word) > 1:
+                hashtags.append(word)
+            else:
+                normal_words.append(word)
+        return hashtags, " ".join(normal_words)
+
+    def _insert_description_text(self, browser, description, text):
+        if hasattr(browser, "send_cdp"):
+            browser.send_cdp("Input.insertText", {"text": str(text)})
+            return True
+        return bool(browser.execute_script(INSERT_DESCRIPTION_TEXT_SCRIPT, description, text))
+
+    def _press_enter(self, browser, description):
+        if hasattr(browser, "send_cdp"):
+            for event in ENTER_KEY_EVENTS:
+                browser.send_cdp("Input.dispatchKeyEvent", dict(event))
+            return True
+        if hasattr(browser, "press"):
+            try:
+                browser.press(Type.ENTER)
+                return True
+            except Exception:
+                pass
+        if hasattr(browser, "send_text"):
+            browser.send_text("\n", send_enter=False, clear_text=False)
+            return True
+        return bool(browser.execute_script(ENTER_DESCRIPTION_SCRIPT, description))
 
     def _dismiss_optional_upload_dialogs(self, browser):
         for script in (OPTIONAL_CANCEL_BUTTON_SCRIPT, OPTIONAL_GOT_IT_BUTTON_SCRIPT):
