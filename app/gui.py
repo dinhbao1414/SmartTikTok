@@ -12,7 +12,9 @@ from app.profiles.store import (
     create_chrome_profiles,
     delete_profile_record,
     load_profiles,
+    split_channel_urls,
     update_profile_channel,
+    update_profile_fields,
 )
 from app.workers.upload_worker import YoutubeToTikTokWorker
 
@@ -211,9 +213,9 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
             "Delete",
         ])
         self.table.horizontalHeader().setStretchLastSection(False)
-        self.table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Fixed)
+        self.table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Fixed)
+        self.table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.Fixed)
         self.table.horizontalHeader().setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(4, QtWidgets.QHeaderView.ResizeMode.Fixed)
         self.table.horizontalHeader().setSectionResizeMode(5, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
@@ -267,6 +269,23 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         timing_layout.addWidget(self.input_split_threshold, 1, 1)
         timing_layout.setColumnStretch(1, 1)
 
+        self.settings_split_schedule_group = QtWidgets.QGroupBox("Split schedule", parent=self.settings_tab)
+        split_schedule_layout = QtWidgets.QGridLayout(self.settings_split_schedule_group)
+        split_schedule_layout.setContentsMargins(8, 8, 8, 8)
+        split_schedule_layout.setHorizontalSpacing(8)
+        split_schedule_layout.setVerticalSpacing(6)
+
+        self.input_split_schedule_enabled = QtWidgets.QCheckBox("Enable", parent=self.settings_split_schedule_group)
+        self.input_split_schedule_gap = QtWidgets.QSpinBox(parent=self.settings_split_schedule_group)
+        self.input_split_schedule_gap.setRange(1, 168)
+        self.input_split_schedule_gap.setValue(3)
+        self.input_split_schedule_gap.setSuffix(" h")
+        self.input_split_schedule_gap.setToolTip("Delay between split video parts.")
+        split_schedule_layout.addWidget(self.input_split_schedule_enabled, 0, 0, 1, 2)
+        split_schedule_layout.addWidget(QtWidgets.QLabel("Gap", parent=self.settings_split_schedule_group), 1, 0)
+        split_schedule_layout.addWidget(self.input_split_schedule_gap, 1, 1)
+        split_schedule_layout.setColumnStretch(1, 1)
+
         self.settings_storage_group = QtWidgets.QGroupBox("Storage", parent=self.settings_tab)
         storage_layout = QtWidgets.QGridLayout(self.settings_storage_group)
         storage_layout.setContentsMargins(8, 8, 8, 8)
@@ -295,6 +314,7 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         telegram_layout.setColumnStretch(1, 1)
 
         self.settings_groups_layout.addWidget(self.settings_timing_group, 1)
+        self.settings_groups_layout.addWidget(self.settings_split_schedule_group, 1)
         self.settings_groups_layout.addWidget(self.settings_storage_group, 2)
         self.settings_groups_layout.addWidget(self.settings_telegram_group, 2)
 
@@ -533,7 +553,12 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
 
     def render_table(self):
         compact_column_widths = {
+            0: 110,
+            1: 140,
+            2: 120,
+            3: 420,
             4: 76,
+            5: 90,
             6: 64,
             7: 64,
             8: 72,
@@ -543,18 +568,20 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
 
         self.table.setRowCount(len(self.profiles))
         for row, profile in enumerate(self.profiles):
-            values = [
-                profile.get("name", ""),
-                profile.get("note", ""),
-                profile.get("group", ""),
-            ]
-            for col, value in enumerate(values):
-                self.table.setItem(row, col, QtWidgets.QTableWidgetItem(str(value)))
+            self.table.setItem(row, 0, QtWidgets.QTableWidgetItem(str(profile.get("name", ""))))
 
-            channel_input = QtWidgets.QLineEdit(parent=self.table)
-            channel_input.setText(profile.get("channel_url", ""))
-            self.apply_high_contrast_palette(channel_input)
-            self.table.setCellWidget(row, 3, channel_input)
+            note_input = QtWidgets.QLineEdit(parent=self.table)
+            note_input.setText(profile.get("note", ""))
+            self.apply_high_contrast_palette(note_input)
+            self.table.setCellWidget(row, 1, note_input)
+
+            group_input = QtWidgets.QLineEdit(parent=self.table)
+            group_input.setText(profile.get("group", ""))
+            self.apply_high_contrast_palette(group_input)
+            self.table.setCellWidget(row, 2, group_input)
+
+            channel_cell = self._create_channel_url_cell(profile)
+            self.table.setCellWidget(row, 3, channel_cell)
 
             mode_combo = QtWidgets.QComboBox(parent=self.table)
             mode_combo.addItems(["shorts", "videos"])
@@ -573,9 +600,11 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
             save_button = QtWidgets.QPushButton("Save", parent=self.table)
             save_button.setMinimumWidth(compact_column_widths[7])
             save_button.clicked.connect(
-                lambda _, p=profile, url=channel_input, mode=mode_combo: self.save_channel(
+                lambda _, p=profile, note=note_input, group=group_input, mode=mode_combo: self.save_profile_row(
                     p,
-                    url.text(),
+                    note.text(),
+                    group.text(),
+                    p.get("channel_url", ""),
                     mode.currentText(),
                 )
             )
@@ -587,32 +616,125 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
             self.table.setCellWidget(row, 8, button_delete)
 
     def save_channel(self, profile, channel_url, channel_mode):
+        return self.save_profile_row(
+            profile,
+            profile.get("note", ""),
+            profile.get("group", ""),
+            channel_url,
+            channel_mode,
+        )
+
+    def save_profile_row(self, profile, note, group, channel_url, channel_mode):
         try:
-            update_profile_channel(PROFILES_PATH, profile.get("id"), channel_url, channel_mode)
+            update_profile_fields(
+                PROFILES_PATH,
+                profile.get("id"),
+                note=note,
+                group=group,
+                channel_url=channel_url,
+                channel_mode=channel_mode,
+            )
         except ValueError as error:
             QtWidgets.QMessageBox.warning(self, "Invalid channel mode", str(error))
             return
         self.reload_profiles()
-        self.statusbar.showMessage("Saved channel assignment", 3000)
+        self.statusbar.showMessage("Saved profile", 3000)
 
     def save_visible_channel_assignments(self):
         for row, profile in enumerate(self.profiles):
-            channel_input = self.table.cellWidget(row, 3)
+            note_input = self.table.cellWidget(row, 1)
+            group_input = self.table.cellWidget(row, 2)
             mode_combo = self.table.cellWidget(row, 4)
-            if not channel_input or not mode_combo:
+            if not note_input or not group_input or not mode_combo:
                 continue
             try:
-                update_profile_channel(
+                update_profile_fields(
                     PROFILES_PATH,
                     profile.get("id"),
-                    channel_input.text(),
-                    mode_combo.currentText(),
+                    note=note_input.text(),
+                    group=group_input.text(),
+                    channel_url=profile.get("channel_url", ""),
+                    channel_mode=mode_combo.currentText(),
                 )
             except ValueError as error:
                 QtWidgets.QMessageBox.warning(self, "Invalid channel mode", str(error))
                 return False
         self.profiles = load_profiles(PROFILES_PATH)
         return True
+
+    def _create_channel_url_cell(self, profile):
+        cell = QtWidgets.QWidget(parent=self.table)
+        layout = QtWidgets.QHBoxLayout(cell)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        urls = split_channel_urls(profile.get("channel_url", ""))
+        button = QtWidgets.QPushButton(parent=cell)
+        button.setObjectName("ChannelUrlOpenButton")
+        button.setText(urls[0] if urls else "Add channel URLs")
+        button.setToolTip(profile.get("channel_url", ""))
+        button.setMinimumWidth(180)
+        button.clicked.connect(lambda _, p=profile: self.open_channel_url_dialog(p))
+
+        badge = QtWidgets.QLabel(parent=cell)
+        badge.setObjectName("ChannelUrlCountBadge")
+        badge.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        badge.setMinimumWidth(54)
+        badge_palette = badge.palette()
+        badge_palette.setColor(QtGui.QPalette.ColorRole.WindowText, QtGui.QColor("#166534"))
+        badge.setPalette(badge_palette)
+        badge.setStyleSheet(
+            "QLabel#ChannelUrlCountBadge {"
+            "background: #DCFCE7; color: #166534; border: 1px solid #86EFAC; "
+            "border-radius: 6px; padding: 3px 6px; font-weight: 700;"
+            "}"
+        )
+
+        count = len(urls)
+        badge.setText(f"{count} URL" if count == 1 else f"{count} URLs")
+        layout.addWidget(button, 1)
+        layout.addWidget(badge)
+        return cell
+
+    def create_channel_url_dialog(self, profile, channel_mode):
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Channel URLs")
+        dialog.resize(640, 360)
+        layout = QtWidgets.QVBoxLayout(dialog)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        editor = QtWidgets.QPlainTextEdit(parent=dialog)
+        editor.setPlainText(profile.get("channel_url", ""))
+        editor.setPlaceholderText("Paste one YouTube channel URL per line")
+        layout.addWidget(editor, 1)
+
+        buttons = QtWidgets.QHBoxLayout()
+        buttons.addStretch(1)
+        save_button = QtWidgets.QPushButton("Save", parent=dialog)
+        save_button.setObjectName("ChannelUrlDialogSaveButton")
+        close_button = QtWidgets.QPushButton("Close", parent=dialog)
+        buttons.addWidget(save_button)
+        buttons.addWidget(close_button)
+        layout.addLayout(buttons)
+
+        def save_and_close():
+            self.save_channel(profile, editor.toPlainText(), channel_mode)
+            dialog.accept()
+
+        save_button.clicked.connect(save_and_close)
+        close_button.clicked.connect(dialog.reject)
+        return dialog
+
+    def open_channel_url_dialog(self, profile):
+        mode_combo = None
+        try:
+            row = self.profiles.index(profile)
+            mode_combo = self.table.cellWidget(row, 4)
+        except ValueError:
+            pass
+        channel_mode = mode_combo.currentText() if mode_combo else profile.get("channel_mode", "shorts")
+        self.create_channel_url_dialog(profile, channel_mode).exec()
 
     def load_settings(self):
         try:
@@ -625,6 +747,14 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         except ValueError:
             split_threshold = 10
         self.input_split_threshold.setValue(max(1, split_threshold))
+        self.input_split_schedule_enabled.setChecked(
+            self.database.get_setting("split_schedule_enabled", "0") == "1"
+        )
+        try:
+            split_schedule_gap = int(float(self.database.get_setting("split_schedule_gap_hours", "3")))
+        except ValueError:
+            split_schedule_gap = 3
+        self.input_split_schedule_gap.setValue(max(1, split_schedule_gap))
         self.input_download_dir.setText(self.database.get_setting("download_dir", str(DOWNLOADS_DIR)))
         self.input_telegram_token.setText(self.database.get_setting("telegram_bot_token", ""))
         self.input_telegram_chat_id.setText(self.database.get_setting("telegram_chat_id", ""))
@@ -632,6 +762,8 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
     def save_settings(self):
         self.database.set_setting("poll_interval_seconds", self.input_poll_interval.value())
         self.database.set_setting("split_threshold_minutes", self.input_split_threshold.value())
+        self.database.set_setting("split_schedule_enabled", "1" if self.input_split_schedule_enabled.isChecked() else "0")
+        self.database.set_setting("split_schedule_gap_hours", self.input_split_schedule_gap.value())
         self.database.set_setting("download_dir", self.input_download_dir.text() or str(DOWNLOADS_DIR))
         self.database.set_setting("telegram_bot_token", self.input_telegram_token.text())
         self.database.set_setting("telegram_chat_id", self.input_telegram_chat_id.text())

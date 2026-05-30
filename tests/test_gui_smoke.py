@@ -10,7 +10,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 warnings.filterwarnings("ignore", "sipPyTypeDict.*", DeprecationWarning)
 
-from PyQt6 import QtWidgets
+from PyQt6 import QtGui, QtWidgets
 
 import app.gui as gui_module
 from app.gui import Ui_MainWindow
@@ -89,12 +89,13 @@ class GuiSmokeTest(unittest.TestCase):
 
         groups = [
             window.settings_timing_group,
+            window.settings_split_schedule_group,
             window.settings_storage_group,
             window.settings_telegram_group,
         ]
 
-        self.assertEqual([group.title() for group in groups], ["Timing", "Storage", "Telegram"])
-        self.assertEqual(window.settings_groups_layout.count(), 3)
+        self.assertEqual([group.title() for group in groups], ["Timing", "Split schedule", "Storage", "Telegram"])
+        self.assertEqual(window.settings_groups_layout.count(), 4)
         self.assertLessEqual(window.settings_layout.count(), 3)
         self.assertLessEqual(window.settings_layout.spacing(), 8)
         self.assertEqual(window.split_threshold_label.text(), "Split video > (min)")
@@ -102,6 +103,8 @@ class GuiSmokeTest(unittest.TestCase):
             window.input_split_threshold.toolTip(),
             "Videos longer than this many minutes are split into 3 equal parts.",
         )
+        self.assertGreaterEqual(window.input_split_schedule_gap.value(), 1)
+        self.assertIsInstance(window.input_split_schedule_enabled.isChecked(), bool)
 
     def test_close_event_waits_for_running_worker_thread(self):
         class FakeWorker:
@@ -199,7 +202,7 @@ class GuiSmokeTest(unittest.TestCase):
                 patch.object(gui_module, "YoutubeToTikTokWorker", FakeWorker),
             ):
                 window = Ui_MainWindow()
-                window.table.cellWidget(0, 3).setText("https://www.youtube.com/@hoangacc/videos")
+                window.profiles[0]["channel_url"] = "https://www.youtube.com/@hoangacc/videos"
                 window.table.cellWidget(0, 4).setCurrentText("videos")
 
                 window.run_all_profiles()
@@ -231,15 +234,79 @@ class GuiSmokeTest(unittest.TestCase):
             self.assertGreaterEqual(window.table.cellWidget(0, 7).minimumWidth(), 64)
             self.assertGreaterEqual(window.table.cellWidget(0, 8).minimumWidth(), 72)
 
+    def test_profile_table_has_compact_metadata_columns_and_saves_note_group(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profiles_path = root / "data" / "profiles.json"
+            create_chrome_profiles(profiles_path, root / "profiles", 1, "acc", "", "")
+
+            with patch.object(gui_module, "PROFILES_PATH", profiles_path):
+                window = Ui_MainWindow()
+                note_input = window.table.cellWidget(0, 1)
+                group_input = window.table.cellWidget(0, 2)
+                note_input.setText("note edit")
+                group_input.setText("group edit")
+                window.table.cellWidget(0, 7).click()
+
+            profile = load_profiles(profiles_path)[0]
+            self.assertEqual(profile["note"], "note edit")
+            self.assertEqual(profile["group"], "group edit")
+            self.assertLessEqual(window.table.columnWidth(0), 130)
+            self.assertLessEqual(window.table.columnWidth(1), 150)
+            self.assertLessEqual(window.table.columnWidth(2), 130)
+            self.assertGreater(window.table.columnWidth(3), window.table.columnWidth(1))
+
+    def test_channel_url_cell_opens_multiline_dialog_and_has_green_count_badge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profiles_path = root / "data" / "profiles.json"
+            profiles = create_chrome_profiles(profiles_path, root / "profiles", 1, "acc", "", "")
+            from app.profiles.store import update_profile_channel
+
+            update_profile_channel(
+                profiles_path,
+                profiles[0]["id"],
+                "https://www.youtube.com/@a/videos\nhttps://www.youtube.com/@b/videos",
+                "videos",
+            )
+
+            with patch.object(gui_module, "PROFILES_PATH", profiles_path):
+                window = Ui_MainWindow()
+
+                cell = window.table.cellWidget(0, 3)
+                button = cell.findChild(QtWidgets.QPushButton, "ChannelUrlOpenButton")
+                badge = cell.findChild(QtWidgets.QLabel, "ChannelUrlCountBadge")
+
+                self.assertIsNotNone(button)
+                self.assertNotIn("\n", button.text())
+                self.assertEqual(badge.text(), "2 URLs")
+                self.assertEqual(badge.palette().color(QtGui.QPalette.ColorRole.WindowText).name().lower(), "#166534")
+                self.assertEqual(
+                    window.table.horizontalHeader().sectionResizeMode(3),
+                    QtWidgets.QHeaderView.ResizeMode.Stretch,
+                )
+
+                dialog = window.create_channel_url_dialog(window.profiles[0], "videos")
+                editor = dialog.findChild(QtWidgets.QPlainTextEdit)
+                save_button = dialog.findChild(QtWidgets.QPushButton, "ChannelUrlDialogSaveButton")
+                self.assertEqual(editor.toPlainText().count("\n"), 1)
+                editor.setPlainText("https://www.youtube.com/@c/videos")
+                save_button.click()
+                self.assertEqual(load_profiles(profiles_path)[0]["channel_url"], "https://www.youtube.com/@c/videos")
+
     def test_save_settings_persists_split_threshold(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             with patch.object(gui_module, "APP_DB_PATH", root / "app.db"):
                 window = Ui_MainWindow()
                 window.input_split_threshold.setValue(15)
+                window.input_split_schedule_enabled.setChecked(True)
+                window.input_split_schedule_gap.setValue(4)
                 window.save_settings()
 
                 self.assertEqual(window.database.get_setting("split_threshold_minutes"), "15")
+                self.assertEqual(window.database.get_setting("split_schedule_enabled"), "1")
+                self.assertEqual(window.database.get_setting("split_schedule_gap_hours"), "4")
 
 if __name__ == "__main__":
     unittest.main()

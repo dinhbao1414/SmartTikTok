@@ -1,10 +1,11 @@
 import time
+from datetime import datetime, timedelta
 
 from PyQt6 import QtCore
 
 from app.database import AppDatabase
 from app.paths import APP_DB_PATH, DOWNLOADS_DIR, PROFILES_PATH
-from app.profiles.store import get_assigned_profiles, update_profile_status
+from app.profiles.store import get_assigned_profiles, split_channel_urls, update_profile_status
 from app.reporting.telegram import TelegramReporter
 from app.tiktok.uploader import TikTokUploader
 from app.video.splitter import VideoSplitter
@@ -21,6 +22,9 @@ class UploadWorkerCore:
         reporter,
         splitter=None,
         split_threshold_minutes=10,
+        split_schedule_enabled=False,
+        split_schedule_gap_hours=3,
+        clock=None,
     ):
         self.database = database
         self.scanner = scanner
@@ -29,13 +33,16 @@ class UploadWorkerCore:
         self.reporter = reporter
         self.splitter = splitter
         self.split_threshold_minutes = float(split_threshold_minutes or 10)
+        self.split_schedule_enabled = bool(split_schedule_enabled)
+        self.split_schedule_gap_hours = int(split_schedule_gap_hours or 3)
+        self.clock = clock or datetime.now
 
     def process_profile(self, profile):
         profile_id = profile.get("id", "")
         profile_name = profile.get("name", "")
-        channel_url = (profile.get("channel_url") or "").strip()
+        channel_urls = split_channel_urls(profile.get("channel_url") or "")
         channel_mode = (profile.get("channel_mode") or "shorts").strip().lower()
-        if not channel_url:
+        if not channel_urls:
             self.database.write_log("WARN", profile_id, None, f"{profile_name}: missing YouTube channel URL")
             return {"status": "skipped", "reason": "missing_channel_url"}
         if self.database.has_running_job(profile_id):
@@ -46,17 +53,28 @@ class UploadWorkerCore:
         job_id = None
         video = None
         try:
-            scan_url = build_channel_tab_url(channel_url, channel_mode)
-            self.database.write_log("INFO", profile_id, None, f"{profile_name}: scanning {scan_url}")
-            videos = self.scanner.scan(channel_url, channel_mode)
-            inserted = self.database.upsert_videos(profile_id, channel_url, channel_mode, videos)
-            self.database.write_log("INFO", profile_id, None, f"{profile_name}: found {len(videos)} videos, {inserted} new")
+            total_videos = 0
+            total_inserted = 0
+            first_channel_url = channel_urls[0]
+            for channel_url in channel_urls:
+                scan_url = build_channel_tab_url(channel_url, channel_mode)
+                self.database.write_log("INFO", profile_id, None, f"{profile_name}: scanning {scan_url}")
+                videos = self.scanner.scan(channel_url, channel_mode)
+                inserted = self.database.upsert_videos(profile_id, channel_url, channel_mode, videos)
+                total_videos += len(videos)
+                total_inserted += inserted
+            self.database.write_log(
+                "INFO",
+                profile_id,
+                None,
+                f"{profile_name}: found {total_videos} videos, {total_inserted} new from {len(channel_urls)} URLs",
+            )
 
             video = self.database.get_newest_unprocessed_video(profile_id)
             if not video:
                 return {"status": "skipped", "reason": "no_new_video"}
 
-            job_id = self.database.create_job(profile_id, video["video_id"], video["video_url"], channel_url)
+            job_id = self.database.create_job(profile_id, video["video_id"], video["video_url"], video.get("channel_url") or first_channel_url)
             self.database.update_video_status(video["id"], "downloading")
             downloaded = self.downloader.download(video["video_url"])
 
@@ -73,7 +91,7 @@ class UploadWorkerCore:
                 profile_id=profile_id,
                 job_id=job_id,
                 profile_name=profile_name,
-                channel_url=channel_url,
+                channel_url=video.get("channel_url") or first_channel_url,
                 video_url=video["video_url"],
                 status="uploaded",
                 elapsed_seconds=elapsed,
@@ -103,7 +121,7 @@ class UploadWorkerCore:
                 profile_id=profile_id,
                 job_id=job_id,
                 profile_name=profile_name,
-                channel_url=channel_url,
+                channel_url=video.get("channel_url") if video else "\n".join(channel_urls),
                 video_url=video["video_url"] if video else "",
                 status="failed",
                 elapsed_seconds=elapsed,
@@ -115,14 +133,34 @@ class UploadWorkerCore:
         duration = float(downloaded.get("duration") or 0)
         if self.splitter and duration > self.split_threshold_minutes * 60:
             parts = self.splitter.split_into_equal_parts(downloaded["file_path"], duration, parts=3)
-            return [
-                {
+            upload_items = []
+            for index, part in enumerate(parts):
+                item = {
                     "file_path": part["file_path"],
                     "title": f"{upload_title} Part {part['part_number']}",
                 }
-                for part in parts
-            ]
+                if self.split_schedule_enabled and index > 0:
+                    item["schedule"] = self._schedule_for_split_part(index)
+                upload_items.append(item)
+            return upload_items
         return [{"file_path": downloaded["file_path"], "title": upload_title}]
+
+    def _schedule_for_split_part(self, part_index):
+        scheduled_at = self._schedule_base_time() + timedelta(hours=self.split_schedule_gap_hours * part_index)
+        return {
+            "day": scheduled_at.day,
+            "month": scheduled_at.month,
+            "year": scheduled_at.year,
+            "hour": scheduled_at.hour,
+            "minute": scheduled_at.minute,
+        }
+
+    def _schedule_base_time(self):
+        base = self.clock().replace(second=0, microsecond=0)
+        remainder = base.minute % 5
+        if remainder:
+            base += timedelta(minutes=5 - remainder)
+        return base
 
     def _upload_items(self, profile_path, upload_items):
         if len(upload_items) > 1 and hasattr(self.uploader, "upload_many"):
@@ -178,6 +216,8 @@ class YoutubeToTikTokWorker(QtCore.QObject):
             reporter=reporter,
             splitter=VideoSplitter(ffmpeg_path),
             split_threshold_minutes=self._split_threshold_minutes(),
+            split_schedule_enabled=self._split_schedule_enabled(),
+            split_schedule_gap_hours=self._split_schedule_gap_hours(),
         )
 
         while not self.stop_requested:
@@ -211,4 +251,14 @@ class YoutubeToTikTokWorker(QtCore.QObject):
             value = float(self.database.get_setting("split_threshold_minutes", "10"))
         except ValueError:
             value = 10
+        return max(1, value)
+
+    def _split_schedule_enabled(self):
+        return self.database.get_setting("split_schedule_enabled", "0") == "1"
+
+    def _split_schedule_gap_hours(self):
+        try:
+            value = int(float(self.database.get_setting("split_schedule_gap_hours", "3")))
+        except ValueError:
+            value = 3
         return max(1, value)

@@ -52,6 +52,8 @@ DEFAULT_SETTINGS = {
     "telegram_chat_id": "",
     "upload_latest_on_first_scan": "1",
     "split_threshold_minutes": "10",
+    "split_schedule_enabled": "0",
+    "split_schedule_gap_hours": "3",
     "ffmpeg_path": r"C:\ffmpeg\bin\ffmpeg.exe",
 }
 

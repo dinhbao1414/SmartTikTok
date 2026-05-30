@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 from app.database import AppDatabase
@@ -9,10 +10,19 @@ from app.workers.upload_worker import UploadWorkerCore, YoutubeToTikTokWorker
 class FakeScanner:
     def __init__(self):
         self.calls = 0
+        self.scanned = []
 
     def scan(self, channel_url, mode):
         self.calls += 1
+        self.scanned.append((channel_url, mode))
         return [{"video_id": "aaaaaaaaaaa", "video_url": "https://www.youtube.com/shorts/aaaaaaaaaaa"}]
+
+class MultiUrlScanner(FakeScanner):
+    def scan(self, channel_url, mode):
+        self.calls += 1
+        self.scanned.append((channel_url, mode))
+        video_id = "aaaaaaaaaaa" if channel_url.endswith("@a") else "bbbbbbbbbbb"
+        return [{"video_id": video_id, "video_url": f"https://www.youtube.com/watch?v={video_id}"}]
 
 
 class FakeDownloader:
@@ -36,8 +46,8 @@ class FakeUploader:
         self.uploads.append({"profile_path": profile_path, "video_path": video_path, "title": title})
         return {"status": "uploaded", "file_path": str(video_path)}
 
-    def upload_many(self, profile_path, upload_items):
-        self.upload_many_calls.append({"profile_path": profile_path, "upload_items": upload_items})
+    def upload_many(self, profile_path, upload_items, **kwargs):
+        self.upload_many_calls.append({"profile_path": profile_path, "upload_items": upload_items, "kwargs": kwargs})
         results = []
         for item in upload_items:
             self.uploads.append({
@@ -120,6 +130,35 @@ class UploadWorkerCoreTest(unittest.TestCase):
                 any("scanning https://www.youtube.com/@hoangacc/shorts" in log["message"] for log in logs)
             )
 
+    def test_process_profile_scans_each_channel_url_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = AppDatabase(Path(tmp) / "app.db")
+            db.initialize()
+            scanner = MultiUrlScanner()
+            core = UploadWorkerCore(
+                database=db,
+                scanner=scanner,
+                downloader=FakeDownloader(tmp),
+                uploader=FakeUploader(),
+                reporter=FakeReporter(),
+            )
+            profile = {
+                "id": "p1",
+                "name": "Acc1",
+                "profile_path": str(Path(tmp) / "profile"),
+                "channel_url": "https://www.youtube.com/@a\n\nhttps://www.youtube.com/@b",
+                "channel_mode": "videos",
+            }
+
+            result = core.process_profile(profile)
+
+            self.assertEqual(result["status"], "uploaded")
+            self.assertEqual(scanner.scanned, [
+                ("https://www.youtube.com/@a", "videos"),
+                ("https://www.youtube.com/@b", "videos"),
+            ])
+            self.assertEqual(db.get_newest_unprocessed_video("p1")["video_id"], "aaaaaaaaaaa")
+
     def test_process_profile_splits_long_video_and_uploads_three_parts(self):
         class LongVideoDownloader(FakeDownloader):
             def download(self, video_url):
@@ -160,6 +199,77 @@ class UploadWorkerCoreTest(unittest.TestCase):
             ])
             self.assertEqual(len(uploader.upload_many_calls), 1)
             self.assertEqual(len(splitter.calls), 1)
+
+    def test_process_profile_schedules_split_parts_after_first_upload(self):
+        class LongVideoDownloader(FakeDownloader):
+            def download(self, video_url):
+                result = super().download(video_url)
+                result["duration"] = 11 * 60
+                return result
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = AppDatabase(Path(tmp) / "app.db")
+            db.initialize()
+            uploader = FakeUploader()
+            core = UploadWorkerCore(
+                database=db,
+                scanner=FakeScanner(),
+                downloader=LongVideoDownloader(tmp),
+                uploader=uploader,
+                reporter=FakeReporter(),
+                splitter=FakeSplitter(),
+                split_threshold_minutes=10,
+                split_schedule_enabled=True,
+                split_schedule_gap_hours=3,
+                clock=lambda: datetime(2026, 5, 29, 21, 10),
+            )
+            profile = {
+                "id": "p1",
+                "name": "Acc1",
+                "profile_path": str(Path(tmp) / "profile"),
+                "channel_url": "https://www.youtube.com/@hoangacc",
+                "channel_mode": "videos",
+            }
+
+            result = core.process_profile(profile)
+
+            upload_items = uploader.upload_many_calls[0]["upload_items"]
+            self.assertEqual(result["uploaded_parts"], 3)
+            self.assertNotIn("schedule", upload_items[0])
+            self.assertEqual(upload_items[1]["schedule"], {
+                "day": 30,
+                "month": 5,
+                "year": 2026,
+                "hour": 0,
+                "minute": 10,
+            })
+            self.assertEqual(upload_items[2]["schedule"], {
+                "day": 30,
+                "month": 5,
+                "year": 2026,
+                "hour": 3,
+                "minute": 10,
+            })
+
+    def test_split_schedule_rounds_up_to_supported_five_minute_option(self):
+        core = UploadWorkerCore(
+            database=None,
+            scanner=None,
+            downloader=None,
+            uploader=None,
+            reporter=None,
+            split_schedule_enabled=True,
+            split_schedule_gap_hours=3,
+            clock=lambda: datetime(2026, 5, 29, 21, 13),
+        )
+
+        self.assertEqual(core._schedule_for_split_part(1), {
+            "day": 30,
+            "month": 5,
+            "year": 2026,
+            "hour": 0,
+            "minute": 15,
+        })
 
     def test_process_profile_skips_missing_channel(self):
         with tempfile.TemporaryDirectory() as tmp:

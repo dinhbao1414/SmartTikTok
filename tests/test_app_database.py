@@ -14,6 +14,8 @@ class AppDatabaseTest(unittest.TestCase):
             self.assertEqual(db.get_setting("poll_interval_seconds"), "10")
             self.assertEqual(db.get_setting("telegram_bot_token"), "")
             self.assertEqual(db.get_setting("split_threshold_minutes"), "10")
+            self.assertEqual(db.get_setting("split_schedule_enabled"), "0")
+            self.assertEqual(db.get_setting("split_schedule_gap_hours"), "3")
             self.assertEqual(db.get_setting("ffmpeg_path"), r"C:\ffmpeg\bin\ffmpeg.exe")
 
     def test_upsert_videos_deduplicates_per_profile_and_mode(self):
