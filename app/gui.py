@@ -17,9 +17,12 @@ from app.profiles.store import (
     update_profile_fields,
 )
 from app.workers.upload_worker import YoutubeToTikTokWorker
+from version_manager import VersionManager
 
 
 DEFAULT_PROFILES_DIR = ROOT_DIR / "profiles"
+APP_VERSION = "1.0.8"
+UPDATE_REPO_URL = "https://github.com/dinhbao1414/SmartTikTok"
 
 
 class Ui_MainWindow(QtWidgets.QMainWindow):
@@ -41,7 +44,7 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
 
     def setup_ui(self):
         self.setObjectName("MainWindow")
-        self.setWindowTitle("YouTube To TikTok Uploader")
+        self.setWindowTitle(f"SmartTikTok v{APP_VERSION}")
         self.resize(1280, 760)
 
         self.centralwidget = QtWidgets.QWidget(parent=self)
@@ -305,6 +308,7 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
 
         self.input_telegram_token = QtWidgets.QLineEdit(parent=self.settings_telegram_group)
         self.input_telegram_chat_id = QtWidgets.QLineEdit(parent=self.settings_telegram_group)
+        self.button_check_updates = QtWidgets.QPushButton("Check updates", parent=self.settings_tab)
         self.button_save_settings = QtWidgets.QPushButton("Save settings", parent=self.settings_tab)
 
         telegram_layout.addWidget(QtWidgets.QLabel("Bot token", parent=self.settings_telegram_group), 0, 0)
@@ -320,6 +324,7 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
 
         save_layout = QtWidgets.QHBoxLayout()
         save_layout.addStretch(1)
+        save_layout.addWidget(self.button_check_updates)
         save_layout.addWidget(self.button_save_settings)
 
         self.settings_layout.addLayout(self.settings_groups_layout)
@@ -522,6 +527,7 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         self.button_run_all.clicked.connect(self.run_all_profiles)
         self.button_stop.clicked.connect(self.stop_worker)
         self.button_save_settings.clicked.connect(self.save_settings)
+        self.button_check_updates.clicked.connect(self.check_updates)
         self.button_refresh_logs.clicked.connect(self.refresh_logs)
 
     def choose_profiles_dir(self):
@@ -768,6 +774,16 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         self.database.set_setting("telegram_bot_token", self.input_telegram_token.text())
         self.database.set_setting("telegram_chat_id", self.input_telegram_chat_id.text())
         self.statusbar.showMessage("Saved settings", 3000)
+
+    def check_updates(self):
+        self.statusbar.showMessage("Checking updates...", 3000)
+        try:
+            manager = VersionManager(UPDATE_REPO_URL, current_version=APP_VERSION)
+            manager.show_update_dialog(parent=self)
+            self.statusbar.showMessage("Update check finished", 3000)
+        except Exception as error:
+            QtWidgets.QMessageBox.warning(self, "Check updates", f"Could not check updates: {error}")
+            self.statusbar.showMessage("Update check failed", 3000)
 
     def refresh_logs(self):
         self._logs_refresh_pending = False

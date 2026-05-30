@@ -52,6 +52,7 @@ class GuiSmokeTest(unittest.TestCase):
         main_margins = window.main_layout.contentsMargins()
         content_margins = window.content_layout.contentsMargins()
 
+        self.assertEqual(window.windowTitle(), f"SmartTikTok v{gui_module.APP_VERSION}")
         self.assertEqual(nav_labels, ["Profiles", "Settings", "Logs"])
         self.assertEqual(window.pages.count(), 3)
         self.assertEqual(window.sidebar.objectName(), "Sidebar")
@@ -105,6 +106,29 @@ class GuiSmokeTest(unittest.TestCase):
         )
         self.assertGreaterEqual(window.input_split_schedule_gap.value(), 1)
         self.assertIsInstance(window.input_split_schedule_enabled.isChecked(), bool)
+
+    def test_settings_check_updates_button_invokes_version_manager(self):
+        class FakeVersionManager:
+            init_args = []
+            dialog_parents = []
+
+            def __init__(self, repo_url, current_version):
+                self.init_args.append((repo_url, current_version))
+
+            def show_update_dialog(self, parent=None):
+                self.dialog_parents.append(parent)
+                return False
+
+        with patch.object(gui_module, "VersionManager", FakeVersionManager, create=True):
+            window = Ui_MainWindow()
+            window.button_check_updates.click()
+
+        self.assertEqual(window.button_check_updates.text(), "Check updates")
+        self.assertEqual(
+            FakeVersionManager.init_args,
+            [("https://github.com/dinhbao1414/SmartTikTok", gui_module.APP_VERSION)],
+        )
+        self.assertEqual(FakeVersionManager.dialog_parents, [window])
 
     def test_close_event_waits_for_running_worker_thread(self):
         class FakeWorker:
