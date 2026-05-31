@@ -42,8 +42,14 @@ class TelegramReporterTest(unittest.TestCase):
         text = mock_post.call_args.kwargs["json"]["text"]
         self.assertIn("Acc1", text)
         self.assertIn("https://www.youtube.com/@hoangacc/shorts", text)
-        self.assertIn("11.2", text)
-        self.assertIn("Total time seconds", text)
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertEqual(payload["parse_mode"], "HTML")
+        self.assertTrue(payload["disable_web_page_preview"])
+        self.assertIn("11.2s", text)
+        self.assertIn("SmartTikTok Report", text)
+        self.assertIn("Status", text)
+        self.assertIn("Detail", text)
+        self.assertIn("✅", text)
 
 
 if __name__ == "__main__":

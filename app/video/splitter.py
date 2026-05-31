@@ -1,6 +1,15 @@
 import subprocess
 from pathlib import Path
 
+def _run_ffmpeg(command):
+    return subprocess.run(
+        command,
+        check=True,
+        capture_output=True,
+        text=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+
 
 class VideoSplitter:
     def __init__(self, ffmpeg_path=r"C:\ffmpeg\bin\ffmpeg.exe"):
@@ -33,11 +42,11 @@ class VideoSplitter:
     def _run_segment(self, source, output_path, start_at, segment_duration):
         copy_command = self._build_copy_command(source, output_path, start_at, segment_duration)
         try:
-            subprocess.run(copy_command, check=True, capture_output=True, text=True)
+            _run_ffmpeg(copy_command)
             return
         except subprocess.CalledProcessError:
             reencode_command = self._build_reencode_command(source, output_path, start_at, segment_duration)
-            subprocess.run(reencode_command, check=True, capture_output=True, text=True)
+            _run_ffmpeg(reencode_command)
 
     def _base_command(self, source, output_path, start_at, segment_duration):
         return [

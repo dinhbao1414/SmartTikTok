@@ -14,7 +14,7 @@ class VideoSplitterTest(unittest.TestCase):
             source = Path(tmp) / "video.mp4"
             source.write_bytes(b"video")
 
-            def fake_run(command, check, capture_output, text):
+            def fake_run(command, check, capture_output, text, creationflags=0):
                 Path(command[-1]).write_bytes(b"part")
                 return subprocess.CompletedProcess(command, 0)
 
@@ -31,6 +31,7 @@ class VideoSplitterTest(unittest.TestCase):
             self.assertEqual(mock_run.call_count, 3)
             first_command = mock_run.call_args_list[0].args[0]
             self.assertEqual(first_command[0], r"C:\ffmpeg\bin\ffmpeg.exe")
+            self.assertEqual(mock_run.call_args_list[0].kwargs["creationflags"], getattr(subprocess, "CREATE_NO_WINDOW", 0))
             self.assertIn("-ss", first_command)
             self.assertIn("-t", first_command)
             self.assertIn("-c", first_command)
@@ -42,7 +43,7 @@ class VideoSplitterTest(unittest.TestCase):
             source.write_bytes(b"video")
             calls = []
 
-            def fake_run(command, check, capture_output, text):
+            def fake_run(command, check, capture_output, text, creationflags=0):
                 calls.append(command)
                 if "-c" in command and "copy" in command:
                     raise subprocess.CalledProcessError(1, command, stderr="copy failed")

@@ -2,8 +2,10 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 from app.database import AppDatabase
+import app.workers.upload_worker as upload_worker_module
 from app.workers.upload_worker import UploadWorkerCore, YoutubeToTikTokWorker
 
 
@@ -73,6 +75,16 @@ class FakeSplitter:
             result.append({"part_number": part_number, "file_path": str(file_path)})
         return result
 
+class FakePadder:
+    def __init__(self):
+        self.calls = []
+
+    def pad_last_frame_to_duration(self, video_path, duration_seconds, target_seconds=61):
+        self.calls.append((video_path, duration_seconds, target_seconds))
+        padded_path = Path(video_path).with_name(f"{Path(video_path).stem}_padded_61s.mp4")
+        padded_path.write_bytes(b"padded")
+        return str(padded_path)
+
 
 class FakeReporter:
     def __init__(self):
@@ -84,6 +96,143 @@ class FakeReporter:
 
 
 class UploadWorkerCoreTest(unittest.TestCase):
+    def test_clean_tiktok_upload_cache_removes_blob_cache_only(self):
+        from app.profiles.cache import clean_tiktok_upload_cache
+
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_path = Path(tmp) / "profile"
+            blob_dir = profile_path / "Default" / "IndexedDB" / "https_www.tiktok.com_0.indexeddb.blob"
+            leveldb_dir = profile_path / "Default" / "IndexedDB" / "https_www.tiktok.com_0.indexeddb.leveldb"
+            cookie_file = profile_path / "Default" / "Network" / "Cookies"
+            blob_dir.mkdir(parents=True)
+            leveldb_dir.mkdir(parents=True)
+            cookie_file.parent.mkdir(parents=True)
+            (blob_dir / "blob-a").write_bytes(b"a" * 11)
+            (leveldb_dir / "meta").write_bytes(b"metadata")
+            cookie_file.write_bytes(b"cookies")
+
+            result = clean_tiktok_upload_cache(profile_path)
+
+            self.assertEqual(result["deleted_bytes"], 11)
+            self.assertFalse(blob_dir.exists())
+            self.assertTrue(leveldb_dir.exists())
+            self.assertTrue(cookie_file.exists())
+
+    def test_process_profile_cleans_tiktok_upload_cache_after_success(self):
+        class CacheCleaner:
+            def __init__(self):
+                self.calls = []
+
+            def __call__(self, profile_path):
+                self.calls.append(profile_path)
+                return {"deleted_bytes": 11, "deleted_paths": ["blob"]}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = AppDatabase(Path(tmp) / "app.db")
+            db.initialize()
+            cleaner = CacheCleaner()
+            core = UploadWorkerCore(
+                database=db,
+                scanner=FakeScanner(),
+                downloader=FakeDownloader(tmp),
+                uploader=FakeUploader(),
+                reporter=FakeReporter(),
+                profile_cache_cleaner=cleaner,
+            )
+            profile = {
+                "id": "p1",
+                "name": "Acc1",
+                "profile_path": str(Path(tmp) / "profile"),
+                "channel_url": "https://www.youtube.com/@hoangacc",
+                "channel_mode": "shorts",
+            }
+
+            result = core.process_profile(profile)
+
+            self.assertEqual(result["status"], "uploaded")
+            self.assertEqual(cleaner.calls, [profile["profile_path"]])
+            self.assertEqual(result["cache_cleaned_bytes"], 11)
+            logs = db.get_recent_logs(10)
+            self.assertTrue(any("Đã dọn cache tải lên TikTok" in log["message"] for log in logs))
+
+    def test_process_profile_skips_before_scan_when_daily_upload_limit_reached(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = AppDatabase(Path(tmp) / "app.db")
+            db.initialize()
+            existing_job = db.create_job("p1", "old", "https://youtu.be/old", "https://www.youtube.com/@old")
+            db.finish_job(existing_job, "uploaded", 1, "", uploaded_count=3)
+            scanner = FakeScanner()
+            uploader = FakeUploader()
+            core = UploadWorkerCore(
+                database=db,
+                scanner=scanner,
+                downloader=FakeDownloader(tmp),
+                uploader=uploader,
+                reporter=FakeReporter(),
+                daily_upload_limit=3,
+                clock=lambda: datetime.now(),
+            )
+            profile = {
+                "id": "p1",
+                "name": "Acc1",
+                "profile_path": str(Path(tmp) / "profile"),
+                "channel_url": "https://www.youtube.com/@hoangacc",
+                "channel_mode": "shorts",
+            }
+
+            result = core.process_profile(profile)
+
+            self.assertEqual(result, {
+                "status": "skipped",
+                "reason": "daily_upload_limit",
+                "uploaded_today": 3,
+                "daily_limit": 3,
+                "remaining_slots": 0,
+            })
+            self.assertEqual(scanner.calls, 0)
+            self.assertEqual(uploader.uploads, [])
+
+    def test_process_profile_skips_split_video_when_remaining_slots_are_not_enough(self):
+        class LongVideoDownloader(FakeDownloader):
+            def download(self, video_url):
+                result = super().download(video_url)
+                result["duration"] = 11 * 60
+                return result
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = AppDatabase(Path(tmp) / "app.db")
+            db.initialize()
+            existing_job = db.create_job("p1", "old", "https://youtu.be/old", "https://www.youtube.com/@old")
+            db.finish_job(existing_job, "uploaded", 1, "", uploaded_count=1)
+            uploader = FakeUploader()
+            core = UploadWorkerCore(
+                database=db,
+                scanner=FakeScanner(),
+                downloader=LongVideoDownloader(tmp),
+                uploader=uploader,
+                reporter=FakeReporter(),
+                splitter=FakeSplitter(),
+                split_threshold_minutes=10,
+                daily_upload_limit=3,
+                clock=lambda: datetime.now(),
+            )
+            profile = {
+                "id": "p1",
+                "name": "Acc1",
+                "profile_path": str(Path(tmp) / "profile"),
+                "channel_url": "https://www.youtube.com/@hoangacc",
+                "channel_mode": "videos",
+            }
+
+            result = core.process_profile(profile)
+
+            self.assertEqual(result["status"], "skipped")
+            self.assertEqual(result["reason"], "daily_upload_limit")
+            self.assertEqual(result["needed_uploads"], 3)
+            self.assertEqual(result["remaining_slots"], 2)
+            self.assertEqual(uploader.uploads, [])
+            self.assertEqual(db.get_newest_unprocessed_video("p1")["status"], "discovered")
+
     def test_poll_interval_allows_values_below_ten_seconds(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "app.db"
@@ -93,6 +242,17 @@ class UploadWorkerCoreTest(unittest.TestCase):
             worker = YoutubeToTikTokWorker(db_path=db_path)
 
             self.assertEqual(worker._poll_interval(), 1)
+
+    def test_worker_resolves_relative_download_dir_under_app_downloads_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app_downloads = Path(tmp) / "tool" / "downloads"
+            db_path = Path(tmp) / "app.db"
+            db = AppDatabase(db_path)
+            db.initialize()
+            db.set_setting("download_dir", "downloads")
+            with patch.object(upload_worker_module, "DOWNLOADS_DIR", app_downloads):
+                worker = YoutubeToTikTokWorker(db_path=db_path)
+                self.assertEqual(worker._download_dir(), app_downloads)
 
     def test_process_profile_scans_downloads_uploads_and_reports(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -250,6 +410,114 @@ class UploadWorkerCoreTest(unittest.TestCase):
                 "hour": 3,
                 "minute": 10,
             })
+
+    def test_successful_split_video_counts_as_three_daily_uploads(self):
+        class LongVideoDownloader(FakeDownloader):
+            def download(self, video_url):
+                result = super().download(video_url)
+                result["duration"] = 11 * 60
+                return result
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = AppDatabase(Path(tmp) / "app.db")
+            db.initialize()
+            core = UploadWorkerCore(
+                database=db,
+                scanner=FakeScanner(),
+                downloader=LongVideoDownloader(tmp),
+                uploader=FakeUploader(),
+                reporter=FakeReporter(),
+                splitter=FakeSplitter(),
+                split_threshold_minutes=10,
+                daily_upload_limit=3,
+                clock=lambda: datetime.now(),
+            )
+            profile = {
+                "id": "p1",
+                "name": "Acc1",
+                "profile_path": str(Path(tmp) / "profile"),
+                "channel_url": "https://www.youtube.com/@hoangacc",
+                "channel_mode": "videos",
+            }
+
+            result = core.process_profile(profile)
+
+            self.assertEqual(result["status"], "uploaded")
+            self.assertEqual(result["uploaded_parts"], 3)
+            self.assertEqual(db.get_uploaded_count_today("p1"), 3)
+
+    def test_process_profile_pads_short_at_threshold_before_upload(self):
+        class ShortVideoDownloader(FakeDownloader):
+            def download(self, video_url):
+                result = super().download(video_url)
+                result["duration"] = 55
+                return result
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = AppDatabase(Path(tmp) / "app.db")
+            db.initialize()
+            uploader = FakeUploader()
+            padder = FakePadder()
+            reporter = FakeReporter()
+            core = UploadWorkerCore(
+                database=db,
+                scanner=FakeScanner(),
+                downloader=ShortVideoDownloader(tmp),
+                uploader=uploader,
+                reporter=reporter,
+                padder=padder,
+                short_pad_threshold_seconds=55,
+            )
+            profile = {
+                "id": "p1",
+                "name": "Acc1",
+                "profile_path": str(Path(tmp) / "profile"),
+                "channel_url": "https://www.youtube.com/@hoangacc",
+                "channel_mode": "shorts",
+            }
+
+            result = core.process_profile(profile)
+
+            self.assertEqual(result["status"], "uploaded")
+            self.assertEqual(result["padded_short"], True)
+            self.assertEqual(len(padder.calls), 1)
+            self.assertTrue(uploader.uploads[0]["video_path"].endswith("_padded_61s.mp4"))
+            self.assertIn("padded_short=true", reporter.reports[0]["detail"])
+
+    def test_process_profile_does_not_pad_regular_videos_mode(self):
+        class ShortVideoDownloader(FakeDownloader):
+            def download(self, video_url):
+                result = super().download(video_url)
+                result["duration"] = 55
+                return result
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = AppDatabase(Path(tmp) / "app.db")
+            db.initialize()
+            uploader = FakeUploader()
+            padder = FakePadder()
+            core = UploadWorkerCore(
+                database=db,
+                scanner=FakeScanner(),
+                downloader=ShortVideoDownloader(tmp),
+                uploader=uploader,
+                reporter=FakeReporter(),
+                padder=padder,
+                short_pad_threshold_seconds=55,
+            )
+            profile = {
+                "id": "p1",
+                "name": "Acc1",
+                "profile_path": str(Path(tmp) / "profile"),
+                "channel_url": "https://www.youtube.com/@hoangacc",
+                "channel_mode": "videos",
+            }
+
+            result = core.process_profile(profile)
+
+            self.assertEqual(result["padded_short"], False)
+            self.assertEqual(padder.calls, [])
+            self.assertTrue(uploader.uploads[0]["video_path"].endswith("aaaaaaaaaaa.mp4"))
 
     def test_split_schedule_rounds_up_to_supported_five_minute_option(self):
         core = UploadWorkerCore(

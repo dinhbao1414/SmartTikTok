@@ -42,6 +42,29 @@ def save_profiles(data_path, profiles):
         encoding="utf-8",
     )
 
+
+def repair_profile_paths(data_path, profiles_dir):
+    profiles = load_profiles(data_path)
+    profiles_dir = Path(profiles_dir)
+    changed = False
+
+    for profile in profiles:
+        profile_id = profile.get("id")
+        if not profile_id:
+            continue
+        local_path = profiles_dir / profile_id
+        current_path = Path(profile.get("profile_path", ""))
+        if local_path.exists() and current_path != local_path:
+            profile["profile_path"] = str(local_path)
+            changed = True
+        elif not current_path.exists() and profile.get("profile_path") != str(local_path):
+            profile["profile_path"] = str(local_path)
+            changed = True
+
+    if changed:
+        save_profiles(data_path, profiles)
+    return changed
+
 def create_chrome_profiles(data_path, profiles_dir, count, name_prefix, note, group):
     data_path = Path(data_path)
     profiles_dir = Path(profiles_dir)

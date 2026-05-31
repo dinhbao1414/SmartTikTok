@@ -1,3 +1,10 @@
 /.venv
 /profiles/
 /downloads/
+/build/
+/data/
+__pycache__/
+*.pyc
+*.pyo
+*.log
+nuitka-crash-report.xml

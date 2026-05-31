@@ -4,11 +4,37 @@ import websockets
 import json
 import logging
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
+try:
+    from websockets.protocol import State as WebSocketState
+except Exception:
+    WebSocketState = None
 from ..listener import lister_event
 
 # Cấu hình logging
 logging.basicConfig(level=logging.CRITICAL)
 logger = logging.getLogger(__name__)
+
+
+def _is_connection_open(connection):
+    if connection is None:
+        return False
+
+    open_attr = getattr(connection, "open", None)
+    if open_attr is not None:
+        return bool(open_attr)
+
+    closed_attr = getattr(connection, "closed", None)
+    if closed_attr is not None:
+        return not bool(closed_attr)
+
+    state = getattr(connection, "state", None)
+    if state is None:
+        return True
+
+    if WebSocketState is not None:
+        return state == WebSocketState.OPEN
+
+    return getattr(state, "name", None) == "OPEN" or state == 1
 
 class CDPConnection(EventEmitter):
     def __init__(self, url, loop, uuid: str, target=None):
@@ -77,7 +103,7 @@ class CDPConnection(EventEmitter):
 
     async def cleanup_connection(self):
         try:
-            if self.connection and not self.connection.closed:
+            if _is_connection_open(self.connection):
                 await self.connection.close()
                 logger.info("WebSocket connection cleaned up.")
         except Exception as e:
@@ -106,7 +132,7 @@ class CDPConnection(EventEmitter):
         if sessionId:
             message.update({'sessionId': sessionId})
 
-        if not self.connection or not self.connection.open:
+        if not _is_connection_open(self.connection):
             logger.warning("Connection is closed. Cannot send message.")
             return
 

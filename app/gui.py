@@ -1,28 +1,47 @@
 from pathlib import Path
 import sys
+import threading
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from app.branding import app_icon_path, is_valid_ico
 from app.database import AppDatabase
-from app.paths import APP_DB_PATH, DOWNLOADS_DIR, PROFILES_PATH, ROOT_DIR
+from app.paths import APP_DB_PATH, DOWNLOADS_DIR, PROFILES_DIR, PROFILES_PATH, resolve_app_path
 from app.profiles.store import (
     create_chrome_profiles,
     delete_profile_record,
     load_profiles,
+    repair_profile_paths,
     split_channel_urls,
     update_profile_channel,
     update_profile_fields,
 )
+from app.version import DEFAULT_APP_VERSION, read_app_version
 from app.workers.upload_worker import YoutubeToTikTokWorker
 from version_manager import VersionManager
 
 
-DEFAULT_PROFILES_DIR = ROOT_DIR / "profiles"
-APP_VERSION = "1.0.8"
+DEFAULT_PROFILES_DIR = PROFILES_DIR
+APP_VERSION = DEFAULT_APP_VERSION
 UPDATE_REPO_URL = "https://github.com/dinhbao1414/SmartTikTok"
+CHANNEL_MODE_LABELS = {
+    "shorts": "Video ngắn",
+    "videos": "Video dài",
+}
+STATUS_LABELS = {
+    "Idle": "Chờ",
+    "Running": "Đang chạy",
+    "uploaded": "Đã đăng",
+    "failed": "Lỗi",
+    "skipped": "Bỏ qua",
+    "discovered": "Đã phát hiện",
+    "downloading": "Đang tải",
+    "downloaded": "Đã tải",
+    "uploading": "Đang đăng",
+}
 
 
 class Ui_MainWindow(QtWidgets.QMainWindow):
@@ -36,6 +55,7 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         self.worker = None
         self._logs_refresh_pending = False
         self._profiles_refresh_pending = False
+        self.app_version = read_app_version(APP_VERSION)
         self.setup_ui()
         self.setup_connections()
         self.load_settings()
@@ -44,7 +64,10 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
 
     def setup_ui(self):
         self.setObjectName("MainWindow")
-        self.setWindowTitle(f"SmartTikTok v{APP_VERSION}")
+        self.setWindowTitle(f"SmartTikTok v{self.app_version}")
+        self._app_icon = self.create_app_icon()
+        if self._app_icon is not None:
+            self.setWindowIcon(self._app_icon)
         self.resize(1280, 760)
 
         self.centralwidget = QtWidgets.QWidget(parent=self)
@@ -94,16 +117,29 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         self.sidebar_layout.setSpacing(6)
         self.main_layout.addWidget(self.sidebar)
 
-        self.brand_label = QtWidgets.QLabel("YT -> TikTok", parent=self.sidebar)
+        brand_row = QtWidgets.QHBoxLayout()
+        brand_row.setSpacing(8)
+        self.logo_label = QtWidgets.QLabel(parent=self.sidebar)
+        self.logo_label.setObjectName("LogoLabel")
+        self.logo_label.setFixedSize(36, 36)
+        self.logo_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        if self._app_icon is not None:
+            self.logo_label.setPixmap(self._app_icon.pixmap(32, 32))
+        brand_text = QtWidgets.QVBoxLayout()
+        brand_text.setSpacing(1)
+        self.brand_label = QtWidgets.QLabel("SmartTikTok", parent=self.sidebar)
         self.brand_label.setObjectName("BrandLabel")
-        self.brand_caption = QtWidgets.QLabel("Profile uploader", parent=self.sidebar)
+        self.brand_caption = QtWidgets.QLabel("YT -> TikTok", parent=self.sidebar)
         self.brand_caption.setObjectName("MutedLabel")
-        self.sidebar_layout.addWidget(self.brand_label)
-        self.sidebar_layout.addWidget(self.brand_caption)
+        brand_text.addWidget(self.brand_label)
+        brand_text.addWidget(self.brand_caption)
+        brand_row.addWidget(self.logo_label)
+        brand_row.addLayout(brand_text, 1)
+        self.sidebar_layout.addLayout(brand_row)
         self.sidebar_layout.addSpacing(10)
 
         self.nav_buttons = []
-        for index, label in enumerate(["Profiles", "Settings", "Logs"]):
+        for index, label in enumerate(["Hồ sơ", "Cài đặt", "Nhật ký"]):
             button = QtWidgets.QPushButton(label, parent=self.sidebar)
             button.setObjectName("NavButton")
             button.setCheckable(True)
@@ -121,9 +157,9 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
 
         title_box = QtWidgets.QVBoxLayout()
         title_box.setSpacing(1)
-        self.header_title = QtWidgets.QLabel("YouTube -> TikTok", parent=self.header)
+        self.header_title = QtWidgets.QLabel("Quản lý YouTube -> TikTok", parent=self.header)
         self.header_title.setObjectName("HeaderTitle")
-        self.header_subtitle = QtWidgets.QLabel("Profiles, settings, logs", parent=self.header)
+        self.header_subtitle = QtWidgets.QLabel("Hồ sơ, cài đặt, nhật ký", parent=self.header)
         self.header_subtitle.setObjectName("MutedLabel")
         title_box.addWidget(self.header_title)
         title_box.addWidget(self.header_subtitle)
@@ -131,6 +167,13 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
 
         self.setup_run_controls(header_layout)
         self.content_layout.addWidget(self.header)
+
+    def create_app_icon(self):
+        icon_path = app_icon_path()
+        if not icon_path.exists() or not is_valid_ico(icon_path):
+            return None
+        icon = QtGui.QIcon(str(icon_path))
+        return None if icon.isNull() else icon
 
     def set_active_page(self, index):
         self.pages.setCurrentIndex(index)
@@ -148,7 +191,7 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         self.setup_table()
 
     def setup_create_panel(self):
-        self.group_create = QtWidgets.QGroupBox("Create profiles", parent=self.profiles_tab)
+        self.group_create = QtWidgets.QGroupBox("Tạo hồ sơ", parent=self.profiles_tab)
         self.profiles_layout.addWidget(self.group_create)
 
         layout = QtWidgets.QGridLayout(self.group_create)
@@ -161,28 +204,28 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         self.spin_count.setValue(1)
 
         self.input_name = QtWidgets.QLineEdit(parent=self.group_create)
-        self.input_name.setPlaceholderText("Example: Acc")
+        self.input_name.setPlaceholderText("Ví dụ: Acc")
 
         self.input_note = QtWidgets.QLineEdit(parent=self.group_create)
         self.input_group = QtWidgets.QLineEdit(parent=self.group_create)
 
         self.input_profile_dir = QtWidgets.QLineEdit(parent=self.group_create)
         self.input_profile_dir.setText(str(DEFAULT_PROFILES_DIR))
-        self.button_browse = QtWidgets.QPushButton("Browse", parent=self.group_create)
+        self.button_browse = QtWidgets.QPushButton("Chọn", parent=self.group_create)
 
-        self.button_create = QtWidgets.QPushButton("Create", parent=self.group_create)
-        self.button_reload = QtWidgets.QPushButton("Reload", parent=self.group_create)
+        self.button_create = QtWidgets.QPushButton("Tạo", parent=self.group_create)
+        self.button_reload = QtWidgets.QPushButton("Tải lại", parent=self.group_create)
 
-        layout.addWidget(QtWidgets.QLabel("Count"), 0, 0)
+        layout.addWidget(QtWidgets.QLabel("Số lượng"), 0, 0)
         layout.addWidget(self.spin_count, 0, 1)
-        layout.addWidget(QtWidgets.QLabel("Name prefix"), 0, 2)
+        layout.addWidget(QtWidgets.QLabel("Tiền tố tên"), 0, 2)
         layout.addWidget(self.input_name, 0, 3)
-        layout.addWidget(QtWidgets.QLabel("Group"), 0, 4)
+        layout.addWidget(QtWidgets.QLabel("Nhóm"), 0, 4)
         layout.addWidget(self.input_group, 0, 5)
 
-        layout.addWidget(QtWidgets.QLabel("Note"), 1, 0)
+        layout.addWidget(QtWidgets.QLabel("Ghi chú"), 1, 0)
         layout.addWidget(self.input_note, 1, 1, 1, 3)
-        layout.addWidget(QtWidgets.QLabel("Profile folder"), 1, 4)
+        layout.addWidget(QtWidgets.QLabel("Thư mục hồ sơ"), 1, 4)
         layout.addWidget(self.input_profile_dir, 1, 5)
         layout.addWidget(self.button_browse, 1, 6)
 
@@ -193,9 +236,9 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         layout.setColumnStretch(5, 1)
 
     def setup_run_controls(self, controls):
-        self.button_run_all = QtWidgets.QPushButton("Run", parent=self.header)
+        self.button_run_all = QtWidgets.QPushButton("Chạy", parent=self.header)
         self.button_run_all.setObjectName("PrimaryButton")
-        self.button_stop = QtWidgets.QPushButton("Stop", parent=self.header)
+        self.button_stop = QtWidgets.QPushButton("Dừng", parent=self.header)
         self.button_stop.setObjectName("DangerButton")
         self.button_stop.setEnabled(False)
         controls.addWidget(self.button_run_all)
@@ -205,15 +248,15 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         self.table = QtWidgets.QTableWidget(parent=self.profiles_tab)
         self.table.setColumnCount(9)
         self.table.setHorizontalHeaderLabels([
-            "Name",
-            "Note",
-            "Group",
-            "Channel URL",
-            "Mode",
-            "Status",
-            "Open",
-            "Save",
-            "Delete",
+            "Tên",
+            "Ghi chú",
+            "Nhóm",
+            "Kênh YouTube",
+            "Chế độ",
+            "Trạng thái",
+            "Mở",
+            "Lưu",
+            "Xóa",
         ])
         self.table.horizontalHeader().setStretchLastSection(False)
         self.table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Fixed)
@@ -241,6 +284,15 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         palette.setColor(QtGui.QPalette.ColorRole.Button, QtGui.QColor("#F8FAFC"))
         widget.setPalette(palette)
 
+    def channel_mode_label(self, channel_mode):
+        return CHANNEL_MODE_LABELS.get((channel_mode or "shorts").strip().lower(), CHANNEL_MODE_LABELS["shorts"])
+
+    def selected_channel_mode(self, combo):
+        return combo.currentData() or "shorts"
+
+    def status_label(self, status):
+        return STATUS_LABELS.get(str(status or "Idle"), str(status or "Chờ"))
+
     def setup_settings_tab(self):
         self.settings_layout = QtWidgets.QVBoxLayout(self.settings_tab)
         self.settings_layout.setContentsMargins(0, 0, 0, 0)
@@ -249,7 +301,7 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         self.settings_groups_layout = QtWidgets.QHBoxLayout()
         self.settings_groups_layout.setSpacing(8)
 
-        self.settings_timing_group = QtWidgets.QGroupBox("Timing", parent=self.settings_tab)
+        self.settings_timing_group = QtWidgets.QGroupBox("Thời gian", parent=self.settings_tab)
         timing_layout = QtWidgets.QGridLayout(self.settings_timing_group)
         timing_layout.setContentsMargins(8, 8, 8, 8)
         timing_layout.setHorizontalSpacing(8)
@@ -262,41 +314,60 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         self.input_split_threshold.setRange(1, 1440)
         self.input_split_threshold.setValue(10)
         self.input_split_threshold.setToolTip(
-            "Videos longer than this many minutes are split into 3 equal parts."
+            "Video dài hơn số phút này sẽ được cắt thành 3 phần bằng nhau."
+        )
+        self.input_short_pad_threshold = QtWidgets.QSpinBox(parent=self.settings_timing_group)
+        self.input_short_pad_threshold.setRange(1, 3600)
+        self.input_short_pad_threshold.setValue(55)
+        self.input_short_pad_threshold.setSuffix(" giây")
+        self.input_short_pad_threshold.setToolTip(
+            "Video ngắn đạt ngưỡng này sẽ được kéo dài đến 61 giây."
+        )
+        self.input_daily_upload_limit = QtWidgets.QSpinBox(parent=self.settings_timing_group)
+        self.input_daily_upload_limit.setRange(1, 999)
+        self.input_daily_upload_limit.setValue(3)
+        self.input_daily_upload_limit.setToolTip(
+            "Số video tối đa được upload mỗi ngày cho từng tài khoản TikTok. Video cắt 3 phần sẽ tính là 3."
         )
 
-        timing_layout.addWidget(QtWidgets.QLabel("Poll interval (sec)", parent=self.settings_timing_group), 0, 0)
+        timing_layout.addWidget(QtWidgets.QLabel("Chu kỳ quét (giây)", parent=self.settings_timing_group), 0, 0)
         timing_layout.addWidget(self.input_poll_interval, 0, 1)
-        self.split_threshold_label = QtWidgets.QLabel("Split video > (min)", parent=self.settings_timing_group)
+        self.split_threshold_label = QtWidgets.QLabel("Cắt video > (phút)", parent=self.settings_timing_group)
         timing_layout.addWidget(self.split_threshold_label, 1, 0)
         timing_layout.addWidget(self.input_split_threshold, 1, 1)
+        self.short_pad_threshold_label = QtWidgets.QLabel("Kéo dài video ngắn >= (giây)", parent=self.settings_timing_group)
+        timing_layout.addWidget(self.short_pad_threshold_label, 2, 0)
+        timing_layout.addWidget(self.input_short_pad_threshold, 2, 1)
+        self.daily_upload_limit_label = QtWidgets.QLabel("Giới hạn upload/ngày", parent=self.settings_timing_group)
+        timing_layout.addWidget(self.daily_upload_limit_label, 3, 0)
+        timing_layout.addWidget(self.input_daily_upload_limit, 3, 1)
         timing_layout.setColumnStretch(1, 1)
 
-        self.settings_split_schedule_group = QtWidgets.QGroupBox("Split schedule", parent=self.settings_tab)
+        self.settings_split_schedule_group = QtWidgets.QGroupBox("Lịch đăng phần cắt", parent=self.settings_tab)
         split_schedule_layout = QtWidgets.QGridLayout(self.settings_split_schedule_group)
         split_schedule_layout.setContentsMargins(8, 8, 8, 8)
         split_schedule_layout.setHorizontalSpacing(8)
         split_schedule_layout.setVerticalSpacing(6)
 
-        self.input_split_schedule_enabled = QtWidgets.QCheckBox("Enable", parent=self.settings_split_schedule_group)
+        self.input_split_schedule_enabled = QtWidgets.QCheckBox("Bật", parent=self.settings_split_schedule_group)
         self.input_split_schedule_gap = QtWidgets.QSpinBox(parent=self.settings_split_schedule_group)
         self.input_split_schedule_gap.setRange(1, 168)
         self.input_split_schedule_gap.setValue(3)
-        self.input_split_schedule_gap.setSuffix(" h")
-        self.input_split_schedule_gap.setToolTip("Delay between split video parts.")
+        self.input_split_schedule_gap.setSuffix(" giờ")
+        self.input_split_schedule_gap.setToolTip("Khoảng cách giữa các phần video đã cắt.")
         split_schedule_layout.addWidget(self.input_split_schedule_enabled, 0, 0, 1, 2)
-        split_schedule_layout.addWidget(QtWidgets.QLabel("Gap", parent=self.settings_split_schedule_group), 1, 0)
+        split_schedule_layout.addWidget(QtWidgets.QLabel("Giãn cách", parent=self.settings_split_schedule_group), 1, 0)
         split_schedule_layout.addWidget(self.input_split_schedule_gap, 1, 1)
         split_schedule_layout.setColumnStretch(1, 1)
 
-        self.settings_storage_group = QtWidgets.QGroupBox("Storage", parent=self.settings_tab)
+        self.settings_storage_group = QtWidgets.QGroupBox("Lưu trữ", parent=self.settings_tab)
         storage_layout = QtWidgets.QGridLayout(self.settings_storage_group)
         storage_layout.setContentsMargins(8, 8, 8, 8)
         storage_layout.setHorizontalSpacing(8)
         storage_layout.setVerticalSpacing(6)
 
         self.input_download_dir = QtWidgets.QLineEdit(parent=self.settings_storage_group)
-        storage_layout.addWidget(QtWidgets.QLabel("Download folder", parent=self.settings_storage_group), 0, 0)
+        storage_layout.addWidget(QtWidgets.QLabel("Thư mục tải về", parent=self.settings_storage_group), 0, 0)
         storage_layout.addWidget(self.input_download_dir, 0, 1)
         storage_layout.setColumnStretch(1, 1)
 
@@ -308,12 +379,12 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
 
         self.input_telegram_token = QtWidgets.QLineEdit(parent=self.settings_telegram_group)
         self.input_telegram_chat_id = QtWidgets.QLineEdit(parent=self.settings_telegram_group)
-        self.button_check_updates = QtWidgets.QPushButton("Check updates", parent=self.settings_tab)
-        self.button_save_settings = QtWidgets.QPushButton("Save settings", parent=self.settings_tab)
+        self.button_check_updates = QtWidgets.QPushButton("Kiểm tra cập nhật", parent=self.settings_tab)
+        self.button_save_settings = QtWidgets.QPushButton("Lưu cài đặt", parent=self.settings_tab)
 
-        telegram_layout.addWidget(QtWidgets.QLabel("Bot token", parent=self.settings_telegram_group), 0, 0)
+        telegram_layout.addWidget(QtWidgets.QLabel("Token bot", parent=self.settings_telegram_group), 0, 0)
         telegram_layout.addWidget(self.input_telegram_token, 0, 1)
-        telegram_layout.addWidget(QtWidgets.QLabel("Chat id", parent=self.settings_telegram_group), 1, 0)
+        telegram_layout.addWidget(QtWidgets.QLabel("ID chat", parent=self.settings_telegram_group), 1, 0)
         telegram_layout.addWidget(self.input_telegram_chat_id, 1, 1)
         telegram_layout.setColumnStretch(1, 1)
 
@@ -335,7 +406,7 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         layout = QtWidgets.QVBoxLayout(self.logs_tab)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
-        self.button_refresh_logs = QtWidgets.QPushButton("Refresh logs", parent=self.logs_tab)
+        self.button_refresh_logs = QtWidgets.QPushButton("Làm mới nhật ký", parent=self.logs_tab)
         self.logs_view = QtWidgets.QPlainTextEdit(parent=self.logs_tab)
         self.logs_view.setReadOnly(True)
         self.logs_view.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap)
@@ -374,6 +445,11 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
                 color: #111827;
                 font-size: 16px;
                 font-weight: 700;
+            }
+            QLabel#LogoLabel {
+                background: #F3F4F6;
+                border: 1px solid #D1D5DB;
+                border-radius: 8px;
             }
             QLabel#HeaderTitle {
                 color: #111827;
@@ -533,16 +609,18 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
     def choose_profiles_dir(self):
         selected = QtWidgets.QFileDialog.getExistingDirectory(
             self,
-            "Choose Chrome profile folder",
+            "Chọn thư mục hồ sơ Chrome",
             self.input_profile_dir.text() or str(DEFAULT_PROFILES_DIR),
         )
         if selected:
             self.input_profile_dir.setText(selected)
 
     def create_profiles(self):
+        profiles_dir = resolve_app_path(self.input_profile_dir.text(), DEFAULT_PROFILES_DIR)
+        self.database.set_setting("profiles_dir", profiles_dir)
         profiles = create_chrome_profiles(
             data_path=PROFILES_PATH,
-            profiles_dir=Path(self.input_profile_dir.text() or DEFAULT_PROFILES_DIR),
+            profiles_dir=profiles_dir,
             count=self.spin_count.value(),
             name_prefix=self.input_name.text(),
             note=self.input_note.text(),
@@ -550,12 +628,13 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         )
         self.profiles = profiles
         self.render_table()
-        self.statusbar.showMessage(f"Created {self.spin_count.value()} Chrome profiles", 5000)
+        self.statusbar.showMessage(f"Đã tạo {self.spin_count.value()} hồ sơ Chrome", 5000)
 
     def reload_profiles(self):
+        repair_profile_paths(PROFILES_PATH, resolve_app_path(self.input_profile_dir.text(), DEFAULT_PROFILES_DIR))
         self.profiles = load_profiles(PROFILES_PATH)
         self.render_table()
-        self.statusbar.showMessage(f"Loaded {len(self.profiles)} profiles", 3000)
+        self.statusbar.showMessage(f"Đã tải {len(self.profiles)} hồ sơ", 3000)
 
     def render_table(self):
         compact_column_widths = {
@@ -590,20 +669,23 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
             self.table.setCellWidget(row, 3, channel_cell)
 
             mode_combo = QtWidgets.QComboBox(parent=self.table)
-            mode_combo.addItems(["shorts", "videos"])
-            mode_combo.setCurrentText(profile.get("channel_mode", "shorts"))
+            for mode, label in CHANNEL_MODE_LABELS.items():
+                mode_combo.addItem(label, mode)
+            selected_mode = (profile.get("channel_mode") or "shorts").strip().lower()
+            selected_index = mode_combo.findData(selected_mode)
+            mode_combo.setCurrentIndex(max(0, selected_index))
             mode_combo.setMinimumWidth(compact_column_widths[4])
             self.apply_high_contrast_palette(mode_combo)
             self.table.setCellWidget(row, 4, mode_combo)
 
-            self.table.setItem(row, 5, QtWidgets.QTableWidgetItem(str(profile.get("last_status", "Idle"))))
+            self.table.setItem(row, 5, QtWidgets.QTableWidgetItem(self.status_label(profile.get("last_status", "Idle"))))
 
-            button_open = QtWidgets.QPushButton("Open", parent=self.table)
+            button_open = QtWidgets.QPushButton("Mở", parent=self.table)
             button_open.setMinimumWidth(compact_column_widths[6])
             button_open.clicked.connect(lambda _, p=profile: self.open_profile(p))
             self.table.setCellWidget(row, 6, button_open)
 
-            save_button = QtWidgets.QPushButton("Save", parent=self.table)
+            save_button = QtWidgets.QPushButton("Lưu", parent=self.table)
             save_button.setMinimumWidth(compact_column_widths[7])
             save_button.clicked.connect(
                 lambda _, p=profile, note=note_input, group=group_input, mode=mode_combo: self.save_profile_row(
@@ -611,12 +693,12 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
                     note.text(),
                     group.text(),
                     p.get("channel_url", ""),
-                    mode.currentText(),
+                    self.selected_channel_mode(mode),
                 )
             )
             self.table.setCellWidget(row, 7, save_button)
 
-            button_delete = QtWidgets.QPushButton("Delete", parent=self.table)
+            button_delete = QtWidgets.QPushButton("Xóa", parent=self.table)
             button_delete.setMinimumWidth(compact_column_widths[8])
             button_delete.clicked.connect(lambda _, p=profile: self.delete_profile(p))
             self.table.setCellWidget(row, 8, button_delete)
@@ -641,10 +723,10 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
                 channel_mode=channel_mode,
             )
         except ValueError as error:
-            QtWidgets.QMessageBox.warning(self, "Invalid channel mode", str(error))
+            QtWidgets.QMessageBox.warning(self, "Chế độ kênh không hợp lệ", str(error))
             return
         self.reload_profiles()
-        self.statusbar.showMessage("Saved profile", 3000)
+        self.statusbar.showMessage("Đã lưu hồ sơ", 3000)
 
     def save_visible_channel_assignments(self):
         for row, profile in enumerate(self.profiles):
@@ -660,10 +742,10 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
                     note=note_input.text(),
                     group=group_input.text(),
                     channel_url=profile.get("channel_url", ""),
-                    channel_mode=mode_combo.currentText(),
+                    channel_mode=self.selected_channel_mode(mode_combo),
                 )
             except ValueError as error:
-                QtWidgets.QMessageBox.warning(self, "Invalid channel mode", str(error))
+                QtWidgets.QMessageBox.warning(self, "Chế độ kênh không hợp lệ", str(error))
                 return False
         self.profiles = load_profiles(PROFILES_PATH)
         return True
@@ -677,7 +759,7 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         urls = split_channel_urls(profile.get("channel_url", ""))
         button = QtWidgets.QPushButton(parent=cell)
         button.setObjectName("ChannelUrlOpenButton")
-        button.setText(urls[0] if urls else "Add channel URLs")
+        button.setText(urls[0] if urls else "Thêm URL kênh")
         button.setToolTip(profile.get("channel_url", ""))
         button.setMinimumWidth(180)
         button.clicked.connect(lambda _, p=profile: self.open_channel_url_dialog(p))
@@ -697,14 +779,14 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         )
 
         count = len(urls)
-        badge.setText(f"{count} URL" if count == 1 else f"{count} URLs")
+        badge.setText(f"{count} URL")
         layout.addWidget(button, 1)
         layout.addWidget(badge)
         return cell
 
     def create_channel_url_dialog(self, profile, channel_mode):
         dialog = QtWidgets.QDialog(self)
-        dialog.setWindowTitle("Channel URLs")
+        dialog.setWindowTitle("URL kênh YouTube")
         dialog.resize(640, 360)
         layout = QtWidgets.QVBoxLayout(dialog)
         layout.setContentsMargins(12, 12, 12, 12)
@@ -712,14 +794,14 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
 
         editor = QtWidgets.QPlainTextEdit(parent=dialog)
         editor.setPlainText(profile.get("channel_url", ""))
-        editor.setPlaceholderText("Paste one YouTube channel URL per line")
+        editor.setPlaceholderText("Dán mỗi dòng một URL kênh YouTube")
         layout.addWidget(editor, 1)
 
         buttons = QtWidgets.QHBoxLayout()
         buttons.addStretch(1)
-        save_button = QtWidgets.QPushButton("Save", parent=dialog)
+        save_button = QtWidgets.QPushButton("Lưu", parent=dialog)
         save_button.setObjectName("ChannelUrlDialogSaveButton")
-        close_button = QtWidgets.QPushButton("Close", parent=dialog)
+        close_button = QtWidgets.QPushButton("Đóng", parent=dialog)
         buttons.addWidget(save_button)
         buttons.addWidget(close_button)
         layout.addLayout(buttons)
@@ -739,7 +821,7 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
             mode_combo = self.table.cellWidget(row, 4)
         except ValueError:
             pass
-        channel_mode = mode_combo.currentText() if mode_combo else profile.get("channel_mode", "shorts")
+        channel_mode = self.selected_channel_mode(mode_combo) if mode_combo else profile.get("channel_mode", "shorts")
         self.create_channel_url_dialog(profile, channel_mode).exec()
 
     def load_settings(self):
@@ -753,6 +835,16 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         except ValueError:
             split_threshold = 10
         self.input_split_threshold.setValue(max(1, split_threshold))
+        try:
+            short_pad_threshold = int(float(self.database.get_setting("short_pad_threshold_seconds", "55")))
+        except ValueError:
+            short_pad_threshold = 55
+        self.input_short_pad_threshold.setValue(max(1, short_pad_threshold))
+        try:
+            daily_upload_limit = int(float(self.database.get_setting("daily_upload_limit_per_account", "3")))
+        except ValueError:
+            daily_upload_limit = 3
+        self.input_daily_upload_limit.setValue(max(1, daily_upload_limit))
         self.input_split_schedule_enabled.setChecked(
             self.database.get_setting("split_schedule_enabled", "0") == "1"
         )
@@ -761,29 +853,36 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         except ValueError:
             split_schedule_gap = 3
         self.input_split_schedule_gap.setValue(max(1, split_schedule_gap))
-        self.input_download_dir.setText(self.database.get_setting("download_dir", str(DOWNLOADS_DIR)))
+        profiles_dir = resolve_app_path(self.database.get_setting("profiles_dir", str(DEFAULT_PROFILES_DIR)), DEFAULT_PROFILES_DIR)
+        download_dir = resolve_app_path(self.database.get_setting("download_dir", str(DOWNLOADS_DIR)), DOWNLOADS_DIR)
+        self.input_profile_dir.setText(str(profiles_dir))
+        self.input_download_dir.setText(str(download_dir))
         self.input_telegram_token.setText(self.database.get_setting("telegram_bot_token", ""))
         self.input_telegram_chat_id.setText(self.database.get_setting("telegram_chat_id", ""))
 
     def save_settings(self):
         self.database.set_setting("poll_interval_seconds", self.input_poll_interval.value())
         self.database.set_setting("split_threshold_minutes", self.input_split_threshold.value())
+        self.database.set_setting("short_pad_threshold_seconds", self.input_short_pad_threshold.value())
+        self.database.set_setting("daily_upload_limit_per_account", self.input_daily_upload_limit.value())
         self.database.set_setting("split_schedule_enabled", "1" if self.input_split_schedule_enabled.isChecked() else "0")
         self.database.set_setting("split_schedule_gap_hours", self.input_split_schedule_gap.value())
-        self.database.set_setting("download_dir", self.input_download_dir.text() or str(DOWNLOADS_DIR))
+        self.database.set_setting("profiles_dir", resolve_app_path(self.input_profile_dir.text(), DEFAULT_PROFILES_DIR))
+        self.database.set_setting("download_dir", resolve_app_path(self.input_download_dir.text(), DOWNLOADS_DIR))
         self.database.set_setting("telegram_bot_token", self.input_telegram_token.text())
         self.database.set_setting("telegram_chat_id", self.input_telegram_chat_id.text())
-        self.statusbar.showMessage("Saved settings", 3000)
+        self.statusbar.showMessage("Đã lưu cài đặt", 3000)
 
     def check_updates(self):
-        self.statusbar.showMessage("Checking updates...", 3000)
+        self.statusbar.showMessage("Đang kiểm tra cập nhật...", 3000)
         try:
-            manager = VersionManager(UPDATE_REPO_URL, current_version=APP_VERSION)
+            self.app_version = read_app_version(APP_VERSION)
+            manager = VersionManager(UPDATE_REPO_URL, current_version=self.app_version)
             manager.show_update_dialog(parent=self)
-            self.statusbar.showMessage("Update check finished", 3000)
+            self.statusbar.showMessage("Đã kiểm tra cập nhật", 3000)
         except Exception as error:
-            QtWidgets.QMessageBox.warning(self, "Check updates", f"Could not check updates: {error}")
-            self.statusbar.showMessage("Update check failed", 3000)
+            QtWidgets.QMessageBox.warning(self, "Kiểm tra cập nhật", f"Không thể kiểm tra cập nhật: {error}")
+            self.statusbar.showMessage("Kiểm tra cập nhật lỗi", 3000)
 
     def refresh_logs(self):
         self._logs_refresh_pending = False
@@ -794,52 +893,81 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
             profile = str(log["profile_id"] or "")
             profile_tail = profile[-6:] if profile else "-"
             job = log["job_id"] or "-"
-            lines.append(f"{created_at} | {log['level']} | P:{profile_tail} | J:{job} | {log['message']}")
+            lines.append(f"{created_at} | {log['level']} | HS:{profile_tail} | CV:{job} | {log['message']}")
         self.logs_view.setPlainText("\n".join(lines))
 
+    @QtCore.pyqtSlot()
     def schedule_refresh_logs(self):
         if self._logs_refresh_pending:
             return
         self._logs_refresh_pending = True
         QtCore.QTimer.singleShot(500, self.refresh_logs)
 
+    @QtCore.pyqtSlot(str, str)
+    def handle_worker_profile_status(self, _profile_id, _status):
+        self.schedule_reload_profiles()
+
+    @QtCore.pyqtSlot()
     def schedule_reload_profiles(self):
         if self._profiles_refresh_pending:
             return
         self._profiles_refresh_pending = True
         QtCore.QTimer.singleShot(800, self._reload_profiles_from_timer)
 
+    @QtCore.pyqtSlot()
     def _reload_profiles_from_timer(self):
         self._profiles_refresh_pending = False
         self.reload_profiles()
 
+    def confirm_action(self, title, message, locked_button):
+        locked_button.setEnabled(False)
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            title,
+            message,
+            QtWidgets.QMessageBox.StandardButton.Ok | QtWidgets.QMessageBox.StandardButton.Cancel,
+            QtWidgets.QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QtWidgets.QMessageBox.StandardButton.Ok:
+            locked_button.setEnabled(True)
+            return False
+        return True
+
     def run_all_profiles(self):
         if self.worker_thread:
             return
+        if not self.confirm_action("Xác nhận chạy", "Bắt đầu quét YouTube và đăng TikTok?", self.button_run_all):
+            return
         self.save_settings()
         if not self.save_visible_channel_assignments():
+            self.button_run_all.setEnabled(True)
             return
-        self.worker_thread = QtCore.QThread(self)
         self.worker = YoutubeToTikTokWorker(PROFILES_PATH, APP_DB_PATH)
-        self.worker.moveToThread(self.worker_thread)
-        self.worker_thread.started.connect(self.worker.run_forever)
-        self.worker.log_created.connect(self.schedule_refresh_logs)
-        self.worker.profile_status.connect(lambda _profile_id, _status: self.schedule_reload_profiles())
-        self.worker.finished.connect(self.worker_thread.quit)
-        self.worker.finished.connect(self.worker.deleteLater)
-        self.worker_thread.finished.connect(self.worker_thread.deleteLater)
-        self.worker_thread.finished.connect(self.worker_finished)
+        queued = QtCore.Qt.ConnectionType.QueuedConnection
+        self.worker.log_created.connect(self.schedule_refresh_logs, queued)
+        self.worker.profile_status.connect(self.handle_worker_profile_status, queued)
+        self.worker.finished.connect(self.worker_finished, queued)
+        self.worker_thread = threading.Thread(
+            target=self.worker.run_forever,
+            name="SmartTikTokWorker",
+            daemon=True,
+        )
         self.worker_thread.start()
         self.button_run_all.setEnabled(False)
         self.button_stop.setEnabled(True)
-        self.statusbar.showMessage("Worker running", 3000)
+        self.statusbar.showMessage("Đang chạy", 3000)
 
     def stop_worker(self):
+        if not self.worker:
+            return
+        if not self.confirm_action("Xác nhận dừng", "Dừng tiến trình đang chạy?", self.button_stop):
+            return
         if self.worker:
             self.worker.stop()
         self.button_stop.setEnabled(False)
-        self.statusbar.showMessage("Stopping worker", 3000)
+        self.statusbar.showMessage("Đang dừng", 3000)
 
+    @QtCore.pyqtSlot()
     def worker_finished(self):
         self.worker_thread = None
         self.worker = None
@@ -847,12 +975,12 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         self.button_stop.setEnabled(False)
         self.reload_profiles()
         self.refresh_logs()
-        self.statusbar.showMessage("Worker stopped", 3000)
+        self.statusbar.showMessage("Đã dừng", 3000)
 
     def open_profile(self, profile):
         profile_id = profile.get("id")
         if profile_id in self.open_browsers:
-            self.statusbar.showMessage("Profile already open", 4000)
+            self.statusbar.showMessage("Hồ sơ đang mở", 4000)
             return
 
         profile_path = Path(profile.get("profile_path", ""))
@@ -863,16 +991,16 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
             browser = ChromeProfileBrowser(profile_path)
             browser.open("https://www.google.com")
             self.open_browsers[profile_id] = browser
-            self.statusbar.showMessage(f"Opened profile: {profile.get('name', '')}", 5000)
+            self.statusbar.showMessage(f"Đã mở hồ sơ: {profile.get('name', '')}", 5000)
         except Exception as error:
-            QtWidgets.QMessageBox.critical(self, "Cannot open Chrome", str(error))
+            QtWidgets.QMessageBox.critical(self, "Không thể mở Chrome", str(error))
 
     def delete_profile(self, profile):
         profile_id = profile.get("id")
         reply = QtWidgets.QMessageBox.question(
             self,
-            "Delete profile",
-            f"Delete profile '{profile.get('name', '')}' and its data folder?",
+            "Xóa hồ sơ",
+            f"Xóa hồ sơ '{profile.get('name', '')}' và thư mục dữ liệu?",
             QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
             QtWidgets.QMessageBox.StandardButton.No,
         )
@@ -889,16 +1017,17 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         try:
             delete_profile_record(PROFILES_PATH, profile_id)
             self.reload_profiles()
-            self.statusbar.showMessage("Deleted profile", 5000)
+            self.statusbar.showMessage("Đã xóa hồ sơ", 5000)
         except Exception as error:
-            QtWidgets.QMessageBox.critical(self, "Cannot delete profile", str(error))
+            QtWidgets.QMessageBox.critical(self, "Không thể xóa hồ sơ", str(error))
 
     def closeEvent(self, event):
         if self.worker:
             self.worker.stop()
-        if self.worker_thread and self.worker_thread.isRunning():
-            self.statusbar.showMessage("Stopping worker before close", 3000)
-            if not self.worker_thread.wait(10000):
+        if self.worker_thread and self.worker_thread.is_alive():
+            self.statusbar.showMessage("Đang dừng trước khi đóng", 3000)
+            self.worker_thread.join(10)
+            if self.worker_thread.is_alive():
                 event.ignore()
                 return
         for browser in list(self.open_browsers.values()):

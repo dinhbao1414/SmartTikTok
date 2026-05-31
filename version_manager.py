@@ -1,14 +1,15 @@
 import os
 import sys
-import json
 import requests
 import zipfile
 import shutil
 import subprocess
-from datetime import datetime
 from PyQt6.QtWidgets import QMessageBox, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit, QProgressBar
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont
+
+from app.paths import APP_STATE_DIR
+from app.version import DEFAULT_APP_VERSION, read_app_version, write_app_version
 
 # Import packaging.version for proper semantic version comparison
 try:
@@ -238,7 +239,7 @@ class UpdateDialog(QDialog):
             self.progress_bar.hide()
             return
             
-        current_dir = os.getcwd()
+        current_dir = str(APP_STATE_DIR)
         
         self.update_worker = UpdateWorker(self.repo_url, download_url, current_dir)
         self.update_worker.progress_updated.connect(self.update_progress)
@@ -280,13 +281,7 @@ class UpdateDialog(QDialog):
             
             # Chạy file BAT ẩn dứoi nền và đóng App
             try:
-                # Cập nhật thông tin version trong database nếu cần thiết trước khi restart
-                version_file = os.path.join(os.getcwd(), "version.json")
-                with open(version_file, 'w', encoding='utf-8') as f:
-                    json.dump({
-                        'version': self.latest_version,
-                        'updated_at': datetime.now().isoformat()
-                    }, f, indent=2, ensure_ascii=False)
+                write_app_version(self.latest_version)
                
                 subprocess.Popen(self.bat_path, cwd=os.getcwd(), shell=True)
                 sys.exit(0)
@@ -302,7 +297,7 @@ class UpdateDialog(QDialog):
 class VersionManager:
     """Quản lý phiên bản và cập nhật"""
     
-    def __init__(self, repo_url, current_version="1.0.8"):
+    def __init__(self, repo_url, current_version=DEFAULT_APP_VERSION):
         self.repo_url = repo_url.rstrip('/')
         self.current_version = current_version
         self.api_url = self.repo_url.replace('github.com', 'api.github.com/repos')
@@ -310,11 +305,7 @@ class VersionManager:
     def get_current_version(self):
         """Lấy phiên bản hiện tại từ file version.json hoặc config"""
         try:
-            version_file = os.path.join(os.getcwd(), "version.json")
-            if os.path.exists(version_file):
-                with open(version_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    return data.get('version', self.current_version)
+            return read_app_version(default=self.current_version)
         except:
             pass
         return self.current_version
@@ -411,19 +402,15 @@ class VersionManager:
     def restart_application(self):
         """Khởi động lại ứng dụng"""
         try:
-            # Update version file
-            version_file = os.path.join(os.getcwd(), "version.json")
-            with open(version_file, 'w', encoding='utf-8') as f:
-                json.dump({
-                    'version': self.get_latest_version_info()['version'],
-                    'updated_at': datetime.now().isoformat()
-                }, f, indent=2, ensure_ascii=False)
+            latest_info = self.get_latest_version_info()
+            if latest_info:
+                write_app_version(latest_info['version'])
             
             # Tìm file chính để restart - ưu tiên file exe
             python = sys.executable  # Định nghĩa python executable
             main_file = None
             command = None
-            current_dir = os.getcwd()
+            current_dir = str(APP_STATE_DIR)
             
             # Kiểm tra file exe trước
             if os.path.exists(os.path.join(current_dir, "SmartTikTok.exe")):

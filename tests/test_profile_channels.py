@@ -4,10 +4,11 @@ from pathlib import Path
 
 from app.profiles.store import (
     create_chrome_profiles,
+    get_assigned_profiles,
     load_profiles,
+    repair_profile_paths,
     update_profile_channel,
     update_profile_fields,
-    get_assigned_profiles,
 )
 
 
@@ -109,6 +110,21 @@ class ProfileChannelTest(unittest.TestCase):
             self.assertEqual(profile["group"], "new group")
             self.assertEqual(profile["channel_mode"], "videos")
             self.assertEqual(profile["channel_url"], "https://www.youtube.com/@a\nhttps://www.youtube.com/@b")
+
+    def test_repair_profile_paths_moves_existing_records_to_selected_profiles_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_profiles_dir = root / "old" / "profiles"
+            new_profiles_dir = root / "tool" / "profiles"
+            data_path = root / "data" / "profiles.json"
+            profiles = create_chrome_profiles(data_path, old_profiles_dir, 1, "Acc", "", "")
+            profile_id = profiles[0]["id"]
+            (new_profiles_dir / profile_id).mkdir(parents=True)
+
+            changed = repair_profile_paths(data_path, new_profiles_dir)
+
+            self.assertTrue(changed)
+            self.assertEqual(load_profiles(data_path)[0]["profile_path"], str(new_profiles_dir / profile_id))
 
 
 if __name__ == "__main__":

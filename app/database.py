@@ -1,6 +1,6 @@
 import sqlite3
 from contextlib import closing
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 SCHEMA_SQL = """
@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS upload_jobs (
     started_at TEXT NOT NULL,
     finished_at TEXT NOT NULL DEFAULT '',
     elapsed_seconds REAL NOT NULL DEFAULT 0,
+    uploaded_count INTEGER NOT NULL DEFAULT 0,
     error TEXT NOT NULL DEFAULT ''
 );
 
@@ -47,13 +48,16 @@ CREATE TABLE IF NOT EXISTS app_logs (
 
 DEFAULT_SETTINGS = {
     "poll_interval_seconds": "10",
+    "profiles_dir": "profiles",
     "download_dir": "downloads",
     "telegram_bot_token": "",
     "telegram_chat_id": "",
     "upload_latest_on_first_scan": "1",
     "split_threshold_minutes": "10",
+    "short_pad_threshold_seconds": "55",
     "split_schedule_enabled": "0",
     "split_schedule_gap_hours": "3",
+    "daily_upload_limit_per_account": "3",
     "ffmpeg_path": r"C:\ffmpeg\bin\ffmpeg.exe",
 }
 
@@ -73,11 +77,21 @@ class AppDatabase:
     def initialize(self):
         with closing(self.connect()) as connection:
             connection.executescript(SCHEMA_SQL)
+            self._migrate_schema(connection)
             connection.executemany(
                 "INSERT OR IGNORE INTO settings(key, value) VALUES(?, ?)",
                 DEFAULT_SETTINGS.items(),
             )
             connection.commit()
+
+    def _migrate_schema(self, connection):
+        upload_job_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(upload_jobs)").fetchall()
+        }
+        if "uploaded_count" not in upload_job_columns:
+            connection.execute(
+                "ALTER TABLE upload_jobs ADD COLUMN uploaded_count INTEGER NOT NULL DEFAULT 0"
+            )
 
     def get_setting(self, key, default=""):
         with closing(self.connect()) as connection:
@@ -149,18 +163,48 @@ class AppDatabase:
             connection.commit()
             return cursor.lastrowid
 
-    def finish_job(self, job_id, status, elapsed_seconds, error=""):
+    def finish_job(self, job_id, status, elapsed_seconds, error="", uploaded_count=0):
         now = datetime.now().isoformat(timespec="seconds")
+        count = max(0, int(uploaded_count or 0)) if status == "uploaded" else 0
         with closing(self.connect()) as connection:
             connection.execute(
                 """
                 UPDATE upload_jobs
-                SET status = ?, finished_at = ?, elapsed_seconds = ?, error = ?
+                SET status = ?, finished_at = ?, elapsed_seconds = ?, error = ?, uploaded_count = ?
                 WHERE id = ?
                 """,
-                (status, now, float(elapsed_seconds), error or "", job_id),
+                (status, now, float(elapsed_seconds), error or "", count, job_id),
             )
             connection.commit()
+
+    def get_uploaded_count_today(self, profile_id, now=None):
+        current = self._coerce_datetime(now) if now is not None else datetime.now()
+        start = current.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=1)
+        with closing(self.connect()) as connection:
+            row = connection.execute(
+                """
+                SELECT COALESCE(SUM(
+                    CASE WHEN uploaded_count > 0 THEN uploaded_count ELSE 1 END
+                ), 0) AS total
+                FROM upload_jobs
+                WHERE profile_id = ?
+                  AND status = 'uploaded'
+                  AND finished_at >= ?
+                  AND finished_at < ?
+                """,
+                (
+                    profile_id,
+                    start.isoformat(timespec="seconds"),
+                    end.isoformat(timespec="seconds"),
+                ),
+            ).fetchone()
+        return int(row["total"] if row else 0)
+
+    def _coerce_datetime(self, value):
+        if isinstance(value, datetime):
+            return value
+        return datetime.fromisoformat(str(value))
 
     def get_job(self, job_id):
         with closing(self.connect()) as connection:

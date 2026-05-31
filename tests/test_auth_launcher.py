@@ -3,6 +3,7 @@ from unittest.mock import Mock, patch
 
 from app.auth import Auth, check_active_key, get_expiry_info
 from app.launcher import run
+import app.launcher as launcher_module
 
 
 class AuthLauncherTest(unittest.TestCase):
@@ -46,13 +47,14 @@ class AuthLauncherTest(unittest.TestCase):
         main_window = Mock()
         login_form = Mock()
 
-        result = run(
-            app_factory=lambda argv: app,
-            main_window_factory=lambda: main_window,
-            login_form_factory=lambda: login_form,
-            active_key_checker=lambda: True,
-            argv=[],
-        )
+        with patch.object(launcher_module, "_create_app_icon", return_value=None):
+            result = run(
+                app_factory=lambda argv: app,
+                main_window_factory=lambda: main_window,
+                login_form_factory=lambda: login_form,
+                active_key_checker=lambda: True,
+                argv=[],
+            )
 
         self.assertEqual(result, 0)
         main_window.show.assert_called_once_with()
@@ -64,17 +66,43 @@ class AuthLauncherTest(unittest.TestCase):
         main_window = Mock()
         login_form = Mock()
 
-        result = run(
-            app_factory=lambda argv: app,
-            main_window_factory=lambda: main_window,
-            login_form_factory=lambda: login_form,
-            active_key_checker=lambda: False,
-            argv=[],
-        )
+        with patch.object(launcher_module, "_create_app_icon", return_value=None):
+            result = run(
+                app_factory=lambda argv: app,
+                main_window_factory=lambda: main_window,
+                login_form_factory=lambda: login_form,
+                active_key_checker=lambda: False,
+                argv=[],
+            )
 
         self.assertEqual(result, 0)
         login_form.show.assert_called_once_with()
         main_window.show.assert_not_called()
+
+    def test_launcher_applies_logo_to_app_window_and_taskbar(self):
+        app = Mock()
+        app.exec.return_value = 0
+        main_window = Mock()
+        icon = Mock()
+        icon.isNull.return_value = False
+
+        with (
+            patch.object(launcher_module, "_set_windows_app_user_model_id") as set_app_id,
+            patch.object(launcher_module.QtGui, "QIcon", return_value=icon) as qicon,
+        ):
+            result = run(
+                app_factory=lambda argv: app,
+                main_window_factory=lambda: main_window,
+                login_form_factory=Mock(),
+                active_key_checker=lambda: True,
+                argv=[],
+            )
+
+        self.assertEqual(result, 0)
+        set_app_id.assert_called_once_with(launcher_module.APP_USER_MODEL_ID)
+        qicon.assert_called_once_with(str(launcher_module._app_icon_path()))
+        app.setWindowIcon.assert_called_once_with(icon)
+        main_window.setWindowIcon.assert_called_once_with(icon)
 
 
 if __name__ == "__main__":

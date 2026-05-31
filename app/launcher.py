@@ -9,6 +9,7 @@ if __package__ in {None, ""}:
 from PyQt6 import QtGui, QtWidgets
 
 from app.auth import LoginForm, check_active_key
+from app.branding import APP_USER_MODEL_ID, app_icon_path, is_valid_ico, set_windows_app_user_model_id
 from app.gui import Ui_MainWindow
 
 
@@ -25,6 +26,26 @@ def startup_log(message):
     except Exception:
         pass
 
+def _app_icon_path():
+    return app_icon_path()
+
+
+def _set_windows_app_user_model_id(app_id):
+    return set_windows_app_user_model_id(app_id)
+
+
+def _create_app_icon():
+    icon_path = _app_icon_path()
+    if not icon_path.exists() or not is_valid_ico(icon_path):
+        return None
+    icon = QtGui.QIcon(str(icon_path))
+    return None if icon.isNull() else icon
+
+
+def _apply_window_icon(target, icon):
+    if target is not None and icon is not None and hasattr(target, "setWindowIcon"):
+        target.setWindowIcon(icon)
+
 
 def run(
     app_factory=QtWidgets.QApplication,
@@ -33,10 +54,10 @@ def run(
     active_key_checker=check_active_key,
     argv=None,
 ):
+    _set_windows_app_user_model_id(APP_USER_MODEL_ID)
     app = app_factory(sys.argv if argv is None else argv)
-    icon_path = Path(__file__).resolve().parents[1] / "logo" / "output.ico"
-    if icon_path.exists() and hasattr(app, "setWindowIcon"):
-        app.setWindowIcon(QtGui.QIcon(str(icon_path)))
+    icon = _create_app_icon()
+    _apply_window_icon(app, icon)
 
     try:
         startup_log("launcher: checking license")
@@ -51,6 +72,7 @@ def run(
         startup_log(traceback.format_exc())
         window = login_form_factory()
 
+    _apply_window_icon(window, icon)
     window.show()
     return app.exec()
 

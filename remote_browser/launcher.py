@@ -167,8 +167,11 @@ class LaunchBrowser(RemoteCDP):
     
     def __start_browser(self, args_browser):
         args = self._options.to_command_args()
-        browser_args = [self._options.binary_location, args] + args_browser
-        app_processtor = subprocess.Popen(' '.join(browser_args))
+        browser_args = [f'"{self._options.binary_location}"', args] + args_browser
+        app_processtor = subprocess.Popen(
+            ' '.join(browser_args),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
         self._pid = app_processtor.pid
         self.__list_pid.add(app_processtor.pid)
     
