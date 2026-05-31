@@ -1,6 +1,0 @@
-{
-  "number_thread": 1,
-  "type_browser": "Chrome",
-  "path_profile": "profiles",
-  "poll_interval_seconds": 10
-}
