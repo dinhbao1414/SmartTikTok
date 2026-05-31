@@ -1,6 +1,0 @@
-cdp_socket==1.2.8
-numpy==2.2.1
-psutil==6.0.0
-pyee==11.0.1
-websockets==13.1
-opencv-python==4.10.0.84
